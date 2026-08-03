@@ -1,0 +1,45 @@
+# ---- Dependencies ----
+node_modules/
+**/node_modules/
+
+# ---- Build output ----
+.next/
+**/.next/
+out/
+**/out/
+dist/
+**/dist/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+# ---- Secrets / environment ----
+.env
+.env.*
+!.env.example
+.env.txt
+**/.env
+**/.env.*
+!**/.env.example
+
+# ---- Vercel ----
+.vercel
+
+# ---- Local tooling / MCP caches ----
+.mcp.json
+.stitch-mcp/
+.playwright-mcp/
+.claude/settings.local.json
+
+# ---- Backups & dev artifacts ----
+_backups/
+*.zip
+verify-*.png
+profile-*.png
+students-*.png
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
