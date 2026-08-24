@@ -62,6 +62,9 @@ const CAMEL = [
   "paidAt", "enrollmentId", "fromBatchId", "toBatchId", "effectiveMonth", "appliedAt",
   "paidVia", "interestedCourse", "trialDate", "followUpDate", "convertedStudentId",
   "offsetType", "offsetDays", "settingKey", "settingValue", "passwordHash", "userId", "entityId",
+  // multi-tenant additions
+  "contactPhone", "contactEmail", "isPrimary", "impersonatorId", "targetType", "targetId",
+  "entityName", "branchName", "branchIds", "studentCount", "userCount",
   // computed SELECT aliases
   "batchCount", "batchName", "batchStatus", "batchTimeSlot", "courseName", "discountTotal",
   "fromBatchName", "isOverdue", "newRegistrationsMTD", "outstandingLive", "outstandingStudentsCount",
@@ -226,7 +229,19 @@ export const sql = {
   }) as unknown as new (pool: PoolWrapper) => Transaction,
 };
 
-// --- Schema (idempotent). Postgres dialect. Order respects FK dependencies. --
+// ===========================================================================
+// Multi-tenant schema.
+//
+// Isolation model (see MULTI-TENANCY-REQUIREMENTS.md): every operational table
+// carries `entityId` (the tenant / coaching center). Branch-scoped tables also
+// carry `branchId`. Reads are filtered by entityId (+ branch set for branch
+// roles) and writes stamp both from the request's tenant context — enforced in
+// the routes, never from client input.
+//
+// ensureSchema is CREATE-IF-NOT-EXISTS and assumes a clean database. When moving
+// an existing single-tenant DB to this schema, run the reset in seed.ts first
+// (it drops the old tables so this rebuilds them fresh).
+// ===========================================================================
 export async function ensureSchema(): Promise<void> {
   const pool = await getPool();
   const run = (q: string) => pool.request().query(q);
@@ -234,10 +249,123 @@ export async function ensureSchema(): Promise<void> {
   // Retired modules (Tests, Attendance, Teacher Payroll): drop legacy tables.
   await run(`DROP TABLE IF EXISTS TestResults, Tests, Attendance, Teachers CASCADE;`);
 
+  // --- Tenancy backbone ---
+  await run(`
+    CREATE TABLE IF NOT EXISTS Entities (
+      id           INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name         TEXT NOT NULL,
+      slug         TEXT NOT NULL UNIQUE,
+      status       TEXT NOT NULL DEFAULT 'active',   -- active | suspended | deleted
+      contactPhone TEXT,
+      contactEmail TEXT,
+      createdAt    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updatedAt    TIMESTAMPTZ NOT NULL DEFAULT now()
+    );`);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS Branches (
+      id        INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId  INT NOT NULL,
+      name      TEXT NOT NULL,
+      city      TEXT,
+      address   TEXT,
+      phone     TEXT,
+      manager   TEXT,
+      isPrimary SMALLINT NOT NULL DEFAULT 0,
+      status    TEXT NOT NULL DEFAULT 'active',
+      createdAt TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updatedAt TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT FK_Branches_Entities FOREIGN KEY (entityId) REFERENCES Entities(id) ON DELETE CASCADE
+    );`);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS Users (
+      id           INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId     INT,                              -- NULL only for super_admin
+      username     TEXT NOT NULL UNIQUE,             -- globally unique login id
+      passwordHash TEXT NOT NULL,
+      fullName     TEXT,
+      role         TEXT NOT NULL DEFAULT 'entity_admin',
+      status       TEXT NOT NULL DEFAULT 'active',
+      createdAt    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT FK_Users_Entities FOREIGN KEY (entityId) REFERENCES Entities(id) ON DELETE CASCADE
+    );`);
+
+  // Branch set for branch-scoped users (entity_admin implicitly has all branches).
+  await run(`
+    CREATE TABLE IF NOT EXISTS UserBranches (
+      userId   INT NOT NULL,
+      branchId INT NOT NULL,
+      PRIMARY KEY (userId, branchId),
+      CONSTRAINT FK_UB_Users    FOREIGN KEY (userId)   REFERENCES Users(id)    ON DELETE CASCADE,
+      CONSTRAINT FK_UB_Branches FOREIGN KEY (branchId) REFERENCES Branches(id) ON DELETE CASCADE
+    );`);
+
+  // --- Operational tables (all carry entityId; branch-level ones carry branchId) ---
+  await run(`
+    CREATE TABLE IF NOT EXISTS Courses (
+      id             INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId       INT NOT NULL,
+      branchId       INT NOT NULL,
+      name           TEXT NOT NULL,
+      code           TEXT,
+      level          TEXT,
+      durationMonths INT,
+      description    TEXT,
+      admissionFee   DOUBLE PRECISION NOT NULL DEFAULT 0,
+      monthlyFee     DOUBLE PRECISION NOT NULL DEFAULT 0,
+      examFee        DOUBLE PRECISION NOT NULL DEFAULT 0,
+      status         TEXT NOT NULL DEFAULT 'active',
+      createdAt      TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updatedAt      TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT FK_Courses_Entities FOREIGN KEY (entityId) REFERENCES Entities(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Courses_Branches FOREIGN KEY (branchId) REFERENCES Branches(id) ON DELETE CASCADE
+    );`);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS Batches (
+      id         INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId   INT NOT NULL,
+      branchId   INT NOT NULL,
+      courseId   INT NOT NULL,
+      name       TEXT NOT NULL,
+      timeSlot   TEXT,
+      teacher    TEXT,
+      startDate  DATE,
+      endDate    DATE,
+      monthlyFee DOUBLE PRECISION NOT NULL DEFAULT 0,
+      capacity   INT,
+      status     TEXT NOT NULL DEFAULT 'active',
+      createdAt  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updatedAt  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT FK_Batches_Courses  FOREIGN KEY (courseId) REFERENCES Courses(id)  ON DELETE CASCADE,
+      CONSTRAINT FK_Batches_Entities FOREIGN KEY (entityId) REFERENCES Entities(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Batches_Branches FOREIGN KEY (branchId) REFERENCES Branches(id) ON DELETE CASCADE
+    );`);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS FeeComponents (
+      id          INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId    INT NOT NULL,
+      branchId    INT NOT NULL,
+      name        TEXT NOT NULL,
+      category    TEXT,
+      frequency   TEXT,
+      amount      DOUBLE PRECISION NOT NULL DEFAULT 0,
+      description TEXT,
+      status      TEXT NOT NULL DEFAULT 'active',
+      createdAt   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updatedAt   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT FK_Fees_Entities FOREIGN KEY (entityId) REFERENCES Entities(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Fees_Branches FOREIGN KEY (branchId) REFERENCES Branches(id) ON DELETE CASCADE
+    );`);
+
   await run(`
     CREATE TABLE IF NOT EXISTS Students (
       id               INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      registryId       TEXT NOT NULL UNIQUE,
+      entityId         INT NOT NULL,
+      branchId         INT NOT NULL,
+      registryId       TEXT NOT NULL,
       fullName         TEXT NOT NULL,
       email            TEXT,
       phone            TEXT,
@@ -256,61 +384,18 @@ export async function ensureSchema(): Promise<void> {
       outstanding      DOUBLE PRECISION NOT NULL DEFAULT 0,
       notes            TEXT,
       createdAt        TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updatedAt        TIMESTAMPTZ NOT NULL DEFAULT now()
-    );`);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS Courses (
-      id             INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      name           TEXT NOT NULL,
-      code           TEXT,
-      level          TEXT,
-      durationMonths INT,
-      description    TEXT,
-      admissionFee   DOUBLE PRECISION NOT NULL DEFAULT 0,
-      monthlyFee     DOUBLE PRECISION NOT NULL DEFAULT 0,
-      examFee        DOUBLE PRECISION NOT NULL DEFAULT 0,
-      status         TEXT NOT NULL DEFAULT 'active',
-      createdAt      TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updatedAt      TIMESTAMPTZ NOT NULL DEFAULT now()
-    );`);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS Batches (
-      id         INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      courseId   INT NOT NULL,
-      name       TEXT NOT NULL,
-      timeSlot   TEXT,
-      teacher    TEXT,
-      startDate  DATE,
-      endDate    DATE,
-      monthlyFee DOUBLE PRECISION NOT NULL DEFAULT 0,
-      capacity   INT,
-      status     TEXT NOT NULL DEFAULT 'active',
-      createdAt  TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updatedAt  TIMESTAMPTZ NOT NULL DEFAULT now(),
-      CONSTRAINT FK_Batches_Courses FOREIGN KEY (courseId) REFERENCES Courses(id) ON DELETE CASCADE
-    );`);
-  await run(`ALTER TABLE Batches ADD COLUMN IF NOT EXISTS endDate DATE;`);
-  await run(`ALTER TABLE Batches ADD COLUMN IF NOT EXISTS monthlyFee DOUBLE PRECISION NOT NULL DEFAULT 0;`);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS FeeComponents (
-      id          INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      name        TEXT NOT NULL,
-      category    TEXT,
-      frequency   TEXT,
-      amount      DOUBLE PRECISION NOT NULL DEFAULT 0,
-      description TEXT,
-      status      TEXT NOT NULL DEFAULT 'active',
-      createdAt   TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updatedAt   TIMESTAMPTZ NOT NULL DEFAULT now()
+      updatedAt        TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT FK_Students_Entities FOREIGN KEY (entityId) REFERENCES Entities(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Students_Branches FOREIGN KEY (branchId) REFERENCES Branches(id) ON DELETE CASCADE,
+      CONSTRAINT UQ_Students_registry UNIQUE (entityId, registryId)
     );`);
 
   await run(`
     CREATE TABLE IF NOT EXISTS Vouchers (
       id             INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      voucherNo      TEXT NOT NULL UNIQUE,
+      entityId       INT NOT NULL,
+      branchId       INT NOT NULL,
+      voucherNo      TEXT NOT NULL,
       studentId      INT NOT NULL,
       description    TEXT,
       amount         DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -323,25 +408,29 @@ export async function ensureSchema(): Promise<void> {
       feeComponentId INT,
       createdAt      TIMESTAMPTZ NOT NULL DEFAULT now(),
       updatedAt      TIMESTAMPTZ NOT NULL DEFAULT now(),
-      CONSTRAINT FK_Vouchers_Students FOREIGN KEY (studentId) REFERENCES Students(id) ON DELETE CASCADE
+      CONSTRAINT FK_Vouchers_Students FOREIGN KEY (studentId) REFERENCES Students(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Vouchers_Entities FOREIGN KEY (entityId) REFERENCES Entities(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Vouchers_Branches FOREIGN KEY (branchId) REFERENCES Branches(id) ON DELETE CASCADE,
+      CONSTRAINT UQ_Vouchers_no UNIQUE (entityId, voucherNo)
     );`);
-  await run(`ALTER TABLE Vouchers ADD COLUMN IF NOT EXISTS generateDate DATE;`);
-  await run(`ALTER TABLE Vouchers ADD COLUMN IF NOT EXISTS expiryDate DATE;`);
-  await run(`ALTER TABLE Vouchers ADD COLUMN IF NOT EXISTS billingMonth CHAR(7);`);
 
   await run(`
     CREATE TABLE IF NOT EXISTS VoucherItems (
       id        INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId  INT NOT NULL,
       voucherId INT NOT NULL,
       batchId   INT,
       label     TEXT,
       amount    DOUBLE PRECISION NOT NULL DEFAULT 0,
-      CONSTRAINT FK_VoucherItems_Vouchers FOREIGN KEY (voucherId) REFERENCES Vouchers(id) ON DELETE CASCADE
+      CONSTRAINT FK_VoucherItems_Vouchers FOREIGN KEY (voucherId) REFERENCES Vouchers(id) ON DELETE CASCADE,
+      CONSTRAINT FK_VoucherItems_Entities FOREIGN KEY (entityId)  REFERENCES Entities(id) ON DELETE CASCADE
     );`);
 
   await run(`
     CREATE TABLE IF NOT EXISTS Payments (
       id         INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId   INT NOT NULL,
+      branchId   INT NOT NULL,
       voucherId  INT NOT NULL,
       amount     DOUBLE PRECISION NOT NULL,
       method     TEXT,
@@ -349,29 +438,36 @@ export async function ensureSchema(): Promise<void> {
       receivedBy TEXT,
       paidAt     TIMESTAMPTZ NOT NULL DEFAULT now(),
       createdAt  TIMESTAMPTZ NOT NULL DEFAULT now(),
-      CONSTRAINT FK_Payments_Vouchers FOREIGN KEY (voucherId) REFERENCES Vouchers(id) ON DELETE CASCADE
+      CONSTRAINT FK_Payments_Vouchers FOREIGN KEY (voucherId) REFERENCES Vouchers(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Payments_Entities FOREIGN KEY (entityId)  REFERENCES Entities(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Payments_Branches FOREIGN KEY (branchId)  REFERENCES Branches(id) ON DELETE CASCADE
     );`);
-  await run(`ALTER TABLE Payments ADD COLUMN IF NOT EXISTS receivedBy TEXT;`);
 
   await run(`
     CREATE TABLE IF NOT EXISTS Enrollments (
       id         INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId   INT NOT NULL,
+      branchId   INT NOT NULL,
       studentId  INT NOT NULL,
       batchId    INT NOT NULL,
       courseId   INT,
       monthlyFee DOUBLE PRECISION NOT NULL DEFAULT 0,
+      discount   DOUBLE PRECISION NOT NULL DEFAULT 0,
       status     TEXT NOT NULL DEFAULT 'active',
       startDate  DATE,
       createdAt  TIMESTAMPTZ NOT NULL DEFAULT now(),
       updatedAt  TIMESTAMPTZ NOT NULL DEFAULT now(),
       CONSTRAINT FK_Enrollments_Students FOREIGN KEY (studentId) REFERENCES Students(id) ON DELETE CASCADE,
-      CONSTRAINT FK_Enrollments_Batches  FOREIGN KEY (batchId)   REFERENCES Batches(id)
+      CONSTRAINT FK_Enrollments_Batches  FOREIGN KEY (batchId)   REFERENCES Batches(id),
+      CONSTRAINT FK_Enrollments_Entities FOREIGN KEY (entityId)  REFERENCES Entities(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Enrollments_Branches FOREIGN KEY (branchId)  REFERENCES Branches(id) ON DELETE CASCADE
     );`);
-  await run(`ALTER TABLE Enrollments ADD COLUMN IF NOT EXISTS discount DOUBLE PRECISION NOT NULL DEFAULT 0;`);
 
   await run(`
     CREATE TABLE IF NOT EXISTS Transfers (
       id             INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId       INT NOT NULL,
+      branchId       INT NOT NULL,
       studentId      INT NOT NULL,
       enrollmentId   INT,
       fromBatchId    INT,
@@ -381,37 +477,32 @@ export async function ensureSchema(): Promise<void> {
       status         TEXT NOT NULL DEFAULT 'pending',
       createdAt      TIMESTAMPTZ NOT NULL DEFAULT now(),
       appliedAt      TIMESTAMPTZ,
-      CONSTRAINT FK_Transfers_Students FOREIGN KEY (studentId) REFERENCES Students(id) ON DELETE CASCADE
+      CONSTRAINT FK_Transfers_Students FOREIGN KEY (studentId) REFERENCES Students(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Transfers_Entities FOREIGN KEY (entityId)  REFERENCES Entities(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Transfers_Branches FOREIGN KEY (branchId)  REFERENCES Branches(id) ON DELETE CASCADE
     );`);
 
   await run(`
     CREATE TABLE IF NOT EXISTS Expenses (
       id          INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId    INT NOT NULL,
+      branchId    INT NOT NULL,
       date        DATE NOT NULL,
       category    TEXT,
       description TEXT,
       amount      DOUBLE PRECISION NOT NULL DEFAULT 0,
       paidVia     TEXT,
       createdAt   TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updatedAt   TIMESTAMPTZ NOT NULL DEFAULT now()
-    );`);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS Branches (
-      id        INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      name      TEXT NOT NULL,
-      city      TEXT,
-      address   TEXT,
-      phone     TEXT,
-      manager   TEXT,
-      status    TEXT NOT NULL DEFAULT 'active',
-      createdAt TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updatedAt TIMESTAMPTZ NOT NULL DEFAULT now()
+      updatedAt   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT FK_Expenses_Entities FOREIGN KEY (entityId) REFERENCES Entities(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Expenses_Branches FOREIGN KEY (branchId) REFERENCES Branches(id) ON DELETE CASCADE
     );`);
 
   await run(`
     CREATE TABLE IF NOT EXISTS Inquiries (
       id                 INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId           INT NOT NULL,
+      branchId           INT NOT NULL,
       name               TEXT NOT NULL,
       phone              TEXT,
       email              TEXT,
@@ -423,62 +514,78 @@ export async function ensureSchema(): Promise<void> {
       notes              TEXT,
       convertedStudentId INT,
       createdAt          TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updatedAt          TIMESTAMPTZ NOT NULL DEFAULT now()
+      updatedAt          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT FK_Inquiries_Entities FOREIGN KEY (entityId) REFERENCES Entities(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Inquiries_Branches FOREIGN KEY (branchId) REFERENCES Branches(id) ON DELETE CASCADE
     );`);
 
+  // --- Entity-wide config (no branch dimension) ---
   await run(`
     CREATE TABLE IF NOT EXISTS ReminderRules (
       id         INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId   INT NOT NULL,
       offsetType TEXT NOT NULL DEFAULT 'before',
       offsetDays INT  NOT NULL DEFAULT 0,
       channels   TEXT,
       active     SMALLINT NOT NULL DEFAULT 1,
       createdAt  TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updatedAt  TIMESTAMPTZ NOT NULL DEFAULT now()
+      updatedAt  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT FK_Reminders_Entities FOREIGN KEY (entityId) REFERENCES Entities(id) ON DELETE CASCADE
     );`);
 
   await run(`
     CREATE TABLE IF NOT EXISTS Settings (
-      settingKey   TEXT PRIMARY KEY,
+      entityId     INT NOT NULL,
+      settingKey   TEXT NOT NULL,
       settingValue TEXT,
-      updatedAt    TIMESTAMPTZ NOT NULL DEFAULT now()
+      updatedAt    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (entityId, settingKey),
+      CONSTRAINT FK_Settings_Entities FOREIGN KEY (entityId) REFERENCES Entities(id) ON DELETE CASCADE
     );`);
 
-  await run(`ALTER TABLE Students ADD COLUMN IF NOT EXISTS branchId INT;`);
-  await run(`ALTER TABLE Courses  ADD COLUMN IF NOT EXISTS branchId INT;`);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS Users (
-      id           INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      username     TEXT NOT NULL UNIQUE,
-      passwordHash TEXT NOT NULL,
-      fullName     TEXT,
-      role         TEXT NOT NULL DEFAULT 'accountant',
-      status       TEXT NOT NULL DEFAULT 'active',
-      createdAt    TIMESTAMPTZ NOT NULL DEFAULT now()
-    );`);
-
+  // AuditLog: `entityId` = tenant; the audited record is `targetType`/`targetId`
+  // (renamed from the old entity/entityId columns to free up entityId for tenancy).
+  // impersonatorId is set when a super_admin acted while impersonating an entity.
   await run(`
     CREATE TABLE IF NOT EXISTS AuditLog (
-      id        INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      userId    INT,
-      username  TEXT,
-      action    TEXT NOT NULL,
-      entity    TEXT,
-      entityId  TEXT,
-      detail    TEXT,
-      createdAt TIMESTAMPTZ NOT NULL DEFAULT now()
+      id             INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId       INT,
+      branchId       INT,
+      userId         INT,
+      username       TEXT,
+      impersonatorId INT,
+      action         TEXT NOT NULL,
+      targetType     TEXT,
+      targetId       TEXT,
+      detail         TEXT,
+      createdAt      TIMESTAMPTZ NOT NULL DEFAULT now()
     );`);
 
-  // Seed a default admin if there are no users yet.
-  const uc = await pool.request().query<{ c: number }>("SELECT COUNT(*) AS c FROM Users");
-  if (Number(uc.recordset[0].c) === 0) {
+  // --- Indexes for the isolation filters (run on every query) ---
+  await run(`CREATE INDEX IF NOT EXISTS idx_students_eb    ON Students(entityId, branchId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_courses_eb     ON Courses(entityId, branchId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_batches_eb     ON Batches(entityId, branchId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_fees_eb        ON FeeComponents(entityId, branchId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_vouchers_eb    ON Vouchers(entityId, branchId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_payments_eb    ON Payments(entityId, branchId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_enrollments_eb ON Enrollments(entityId, branchId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_expenses_eb    ON Expenses(entityId, branchId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_inquiries_eb   ON Inquiries(entityId, branchId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_branches_e     ON Branches(entityId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_users_e        ON Users(entityId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_audit_e        ON AuditLog(entityId);`);
+
+  // Seed the platform super admin if no super_admin exists yet.
+  const sa = await pool.request().query<{ c: number }>(
+    "SELECT COUNT(*) AS c FROM Users WHERE role = 'super_admin'"
+  );
+  if (Number(sa.recordset[0].c) === 0) {
     await pool.request()
-      .input("u", sql.NVarChar, "admin")
+      .input("u", sql.NVarChar, "superadmin")
       .input("p", sql.NVarChar, hashPassword("admin123"))
-      .input("n", sql.NVarChar, "Administrator")
-      .query("INSERT INTO Users (username, passwordHash, fullName, role) VALUES (@u, @p, @n, 'admin')");
-    console.log("Seeded default admin user (admin / admin123).");
+      .input("n", sql.NVarChar, "Platform Super Admin")
+      .query("INSERT INTO Users (entityId, username, passwordHash, fullName, role, status) VALUES (NULL, @u, @p, @n, 'super_admin', 'active')");
+    console.log("Seeded platform super admin (superadmin / admin123).");
   }
 }
 

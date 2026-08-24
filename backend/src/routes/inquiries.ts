@@ -1,7 +1,10 @@
 import { Router } from "express";
 import { getPool, sql, type SqlPool } from "../db";
+import { requireRole, type AuthedRequest } from "../auth";
+import { scope, resolveWriteBranch } from "../tenant";
 
 const router = Router();
+const canWrite = requireRole("entity_admin", "branch_manager", "front_desk");
 
 const STAGES = ["new", "contacted", "trial", "enrolled", "lost"];
 
@@ -15,11 +18,13 @@ function toDate(v: unknown): Date | null {
   const d = new Date(String(v));
   return isNaN(d.getTime()) ? null : d;
 }
-async function nextRegistryId(pool: SqlPool): Promise<string> {
+// Registry numbering is per entity.
+async function nextRegistryId(pool: SqlPool, entityId: number): Promise<string> {
   const year = new Date().getFullYear();
   const r = await pool.request()
+    .input("ent", sql.Int, entityId)
     .input("prefix", sql.NVarChar, `CT-${year}-%`)
-    .query("SELECT COALESCE(MAX(CASE WHEN regexp_replace(registryId,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(registryId,'^.*-','')::int END),0) AS mx FROM Students WHERE registryId LIKE @prefix");
+    .query("SELECT COALESCE(MAX(CASE WHEN regexp_replace(registryId,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(registryId,'^.*-','')::int END),0) AS mx FROM Students WHERE entityId=@ent AND registryId LIKE @prefix");
   return `CT-${year}-${String((r.recordset[0].mx as number) + 1).padStart(4, "0")}`;
 }
 
@@ -27,26 +32,32 @@ async function nextRegistryId(pool: SqlPool): Promise<string> {
 router.get("/", async (req, res, next) => {
   try {
     const pool = await getPool();
-    const request = pool.request();
+    const s = scope((req as AuthedRequest).ctx);
+    const request = s.apply(pool.request());
     const where: string[] = [];
     const stage = String(req.query.stage || "").trim();
     if (stage && stage !== "all") { request.input("stage", sql.NVarChar, stage); where.push("stage = @stage"); }
     const search = String(req.query.search || "").trim();
     if (search) { request.input("search", sql.NVarChar, `%${search}%`); where.push("(name LIKE @search OR phone LIKE @search OR interestedCourse LIKE @search)"); }
-    const clause = where.length ? "WHERE " + where.join(" AND ") : "";
-    const r = await request.query(`SELECT * FROM dbo.Inquiries ${clause} ORDER BY createdAt DESC`);
+    const extra = where.length ? "AND " + where.join(" AND ") : "";
+    const r = await request.query(`SELECT * FROM dbo.Inquiries WHERE 1=1 ${s.clause} ${extra} ORDER BY createdAt DESC`);
     res.json(r.recordset);
   } catch (e) { next(e); }
 });
 
 // POST /api/inquiries
-router.post("/", async (req, res, next) => {
+router.post("/", canWrite, async (req, res, next) => {
   try {
     const pool = await getPool();
+    const ctx = (req as AuthedRequest).ctx!;
     const b = req.body || {};
     if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: "Name is required" });
+    const branchId = resolveWriteBranch(ctx, b.branchId != null ? Number(b.branchId) : null);
+    if (branchId == null) return res.status(400).json({ error: "A valid branch is required" });
     const stage = STAGES.includes(b.stage) ? b.stage : "new";
     const r = await pool.request()
+      .input("ent", sql.Int, ctx.entityId)
+      .input("branch", sql.Int, branchId)
       .input("name", sql.NVarChar, String(b.name).trim())
       .input("phone", sql.NVarChar, str(b.phone))
       .input("email", sql.NVarChar, str(b.email))
@@ -56,23 +67,24 @@ router.post("/", async (req, res, next) => {
       .input("trialDate", sql.Date, toDate(b.trialDate))
       .input("followUpDate", sql.Date, toDate(b.followUpDate))
       .input("notes", sql.NVarChar, str(b.notes))
-      .query(`INSERT INTO dbo.Inquiries (name, phone, email, interestedCourse, source, stage, trialDate, followUpDate, notes)
-              OUTPUT INSERTED.* VALUES (@name,@phone,@email,@interestedCourse,@source,@stage,@trialDate,@followUpDate,@notes)`);
+      .query(`INSERT INTO dbo.Inquiries (entityId, branchId, name, phone, email, interestedCourse, source, stage, trialDate, followUpDate, notes)
+              OUTPUT INSERTED.* VALUES (@ent,@branch,@name,@phone,@email,@interestedCourse,@source,@stage,@trialDate,@followUpDate,@notes)`);
     res.status(201).json(r.recordset[0]);
   } catch (e) { next(e); }
 });
 
 // PUT /api/inquiries/:id (also used for stage moves)
-router.put("/:id", async (req, res, next) => {
+router.put("/:id", canWrite, async (req, res, next) => {
   try {
     const pool = await getPool();
+    const s = scope((req as AuthedRequest).ctx);
     const id = Number(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
-    const ex = await pool.request().input("id", sql.Int, id).query("SELECT * FROM dbo.Inquiries WHERE id=@id");
+    const ex = await s.apply(pool.request()).input("id", sql.Int, id).query(`SELECT * FROM dbo.Inquiries WHERE id=@id ${s.clause}`);
     const cur = ex.recordset[0];
     if (!cur) return res.status(404).json({ error: "Inquiry not found" });
     const b = req.body || {};
-    const r = await pool.request()
+    const r = await s.apply(pool.request())
       .input("id", sql.Int, id)
       .input("name", sql.NVarChar, b.name !== undefined ? String(b.name).trim() : cur.name)
       .input("phone", sql.NVarChar, b.phone !== undefined ? str(b.phone) : cur.phone)
@@ -85,47 +97,52 @@ router.put("/:id", async (req, res, next) => {
       .input("notes", sql.NVarChar, b.notes !== undefined ? str(b.notes) : cur.notes)
       .query(`UPDATE dbo.Inquiries SET name=@name,phone=@phone,email=@email,interestedCourse=@interestedCourse,source=@source,
               stage=@stage,trialDate=@trialDate,followUpDate=@followUpDate,notes=@notes,updatedAt=SYSUTCDATETIME()
-              OUTPUT INSERTED.* WHERE id=@id`);
+              OUTPUT INSERTED.* WHERE id=@id ${s.clause}`);
     res.json(r.recordset[0]);
   } catch (e) { next(e); }
 });
 
 // POST /api/inquiries/:id/convert — create a Student from the inquiry, mark enrolled
-router.post("/:id/convert", async (req, res, next) => {
+router.post("/:id/convert", canWrite, async (req, res, next) => {
   try {
     const pool = await getPool();
+    const ctx = (req as AuthedRequest).ctx!;
+    const s = scope(ctx);
     const id = Number(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
-    const ex = await pool.request().input("id", sql.Int, id).query("SELECT * FROM dbo.Inquiries WHERE id=@id");
+    const ex = await s.apply(pool.request()).input("id", sql.Int, id).query(`SELECT * FROM dbo.Inquiries WHERE id=@id ${s.clause}`);
     const inq = ex.recordset[0];
     if (!inq) return res.status(404).json({ error: "Inquiry not found" });
     if (inq.convertedStudentId) return res.status(409).json({ error: "Already converted" });
 
-    const registryId = await nextRegistryId(pool);
+    const registryId = await nextRegistryId(pool, ctx.entityId!);
     const created = await pool.request()
+      .input("ent", sql.Int, inq.entityId)
+      .input("branch", sql.Int, inq.branchId)
       .input("registryId", sql.NVarChar, registryId)
       .input("fullName", sql.NVarChar, inq.name)
       .input("phone", sql.NVarChar, inq.phone)
       .input("email", sql.NVarChar, inq.email)
       .input("course", sql.NVarChar, inq.interestedCourse)
-      .query(`INSERT INTO dbo.Students (registryId, fullName, phone, email, course, status)
-              OUTPUT INSERTED.* VALUES (@registryId,@fullName,@phone,@email,@course,'active')`);
+      .query(`INSERT INTO dbo.Students (entityId, branchId, registryId, fullName, phone, email, course, status)
+              OUTPUT INSERTED.* VALUES (@ent,@branch,@registryId,@fullName,@phone,@email,@course,'active')`);
     const student = created.recordset[0];
 
-    await pool.request().input("id", sql.Int, id).input("sid", sql.Int, student.id)
-      .query("UPDATE dbo.Inquiries SET stage='enrolled', convertedStudentId=@sid, updatedAt=SYSUTCDATETIME() WHERE id=@id");
+    await s.apply(pool.request()).input("id", sql.Int, id).input("sid", sql.Int, student.id)
+      .query(`UPDATE dbo.Inquiries SET stage='enrolled', convertedStudentId=@sid, updatedAt=SYSUTCDATETIME() WHERE id=@id ${s.clause}`);
 
     res.status(201).json({ student });
   } catch (e) { next(e); }
 });
 
 // DELETE /api/inquiries/:id
-router.delete("/:id", async (req, res, next) => {
+router.delete("/:id", canWrite, async (req, res, next) => {
   try {
     const pool = await getPool();
+    const s = scope((req as AuthedRequest).ctx);
     const id = Number(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
-    const r = await pool.request().input("id", sql.Int, id).query("DELETE FROM dbo.Inquiries WHERE id=@id");
+    const r = await s.apply(pool.request()).input("id", sql.Int, id).query(`DELETE FROM dbo.Inquiries WHERE id=@id ${s.clause}`);
     if (r.rowsAffected[0] === 0) return res.status(404).json({ error: "Inquiry not found" });
     res.status(204).end();
   } catch (e) { next(e); }

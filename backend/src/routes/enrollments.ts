@@ -1,8 +1,11 @@
 import { Router } from "express";
 import { getPool, sql } from "../db";
 import { createVoucher } from "./vouchers";
+import { requireRole, type AuthedRequest } from "../auth";
+import { scope } from "../tenant";
 
 const router = Router();
+const canWrite = requireRole("entity_admin", "branch_manager", "front_desk");
 
 function str(v: unknown): string | null {
   if (v === undefined || v === null) return null;
@@ -30,94 +33,100 @@ const ENROLLMENT_SELECT = `
 router.get("/", async (req, res, next) => {
   try {
     const pool = await getPool();
+    const s = scope((req as AuthedRequest).ctx, { entityCol: "e.entityId", branchCol: "e.branchId" });
     const studentId = Number(req.query.studentId);
     if (!studentId) return res.status(400).json({ error: "studentId is required" });
-    const r = await pool.request().input("sid", sql.Int, studentId)
-      .query(`${ENROLLMENT_SELECT} WHERE e.studentId = @sid ORDER BY e.createdAt DESC`);
+    const r = await s.apply(pool.request()).input("sid", sql.Int, studentId)
+      .query(`${ENROLLMENT_SELECT} WHERE e.studentId = @sid ${s.clause} ORDER BY e.createdAt DESC`);
     res.json(r.recordset);
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
 // POST /api/enrollments — enroll a student in a batch (fee snapshotted from batch)
-router.post("/", async (req, res, next) => {
+router.post("/", canWrite, async (req, res, next) => {
   try {
     const pool = await getPool();
+    const ctx = (req as AuthedRequest).ctx!;
+    const s = scope(ctx);
     const b = req.body || {};
     const studentId = Number(b.studentId);
     const batchId = Number(b.batchId);
     if (!studentId || !batchId) return res.status(400).json({ error: "studentId and batchId are required" });
 
-    const bat = await pool.request().input("bid", sql.Int, batchId)
-      .query("SELECT id, courseId, monthlyFee FROM dbo.Batches WHERE id = @bid");
+    // Batch must be in the caller's scope; the enrollment inherits its branch.
+    const bat = await s.apply(pool.request()).input("bid", sql.Int, batchId)
+      .query(`SELECT id, entityId, branchId, courseId, monthlyFee FROM dbo.Batches WHERE id = @bid ${s.clause}`);
     const batch = bat.recordset[0];
     if (!batch) return res.status(400).json({ error: "Batch does not exist" });
 
-    // Avoid duplicate active enrollment in the same batch.
-    const dup = await pool.request().input("sid", sql.Int, studentId).input("bid", sql.Int, batchId)
-      .query("SELECT id FROM dbo.Enrollments WHERE studentId=@sid AND batchId=@bid AND status='active'");
+    // Student must also be in scope.
+    const stu = await s.apply(pool.request()).input("sid", sql.Int, studentId)
+      .query(`SELECT id FROM dbo.Students WHERE id=@sid ${s.clause}`);
+    if (!stu.recordset[0]) return res.status(400).json({ error: "Student does not exist" });
+
+    const dup = await s.apply(pool.request()).input("sid", sql.Int, studentId).input("bid", sql.Int, batchId)
+      .query(`SELECT id FROM dbo.Enrollments WHERE studentId=@sid AND batchId=@bid AND status='active' ${s.clause}`);
     if (dup.recordset[0]) return res.status(400).json({ error: "Student already enrolled in this batch" });
 
-    // Is this the student's FIRST active enrollment in this course? (admission is once per course)
-    const prior = await pool.request().input("sid", sql.Int, studentId).input("cid", sql.Int, batch.courseId)
-      .query("SELECT COUNT(*) AS c FROM dbo.Enrollments WHERE studentId=@sid AND courseId=@cid AND status='active'");
+    const prior = await s.apply(pool.request()).input("sid", sql.Int, studentId).input("cid", sql.Int, batch.courseId)
+      .query(`SELECT COUNT(*) AS c FROM dbo.Enrollments WHERE studentId=@sid AND courseId=@cid AND status='active' ${s.clause}`);
     const firstInCourse = (prior.recordset[0].c as number) === 0;
 
     const monthlyFee = b.monthlyFee !== undefined ? Number(b.monthlyFee) : batch.monthlyFee;
     const discount = Math.max(0, Number(b.discount) || 0);
     const r = await pool.request()
+      .input("ent", sql.Int, batch.entityId)
+      .input("branch", sql.Int, batch.branchId)
       .input("sid", sql.Int, studentId)
       .input("bid", sql.Int, batchId)
       .input("cid", sql.Int, batch.courseId)
       .input("fee", sql.Float, isNaN(monthlyFee) ? batch.monthlyFee : monthlyFee)
       .input("disc", sql.Float, discount)
       .input("start", sql.Date, b.startDate ? new Date(String(b.startDate)) : null)
-      .query(`INSERT INTO dbo.Enrollments (studentId, batchId, courseId, monthlyFee, discount, startDate)
-              OUTPUT INSERTED.* VALUES (@sid, @bid, @cid, @fee, @disc, @start)`);
+      .query(`INSERT INTO dbo.Enrollments (entityId, branchId, studentId, batchId, courseId, monthlyFee, discount, startDate)
+              OUTPUT INSERTED.* VALUES (@ent, @branch, @sid, @bid, @cid, @fee, @disc, @start)`);
 
     // Charge the course admission fee once (on the first enrollment in that course).
     if (firstInCourse) {
-      const cr = await pool.request().input("cid", sql.Int, batch.courseId)
-        .query("SELECT name, admissionFee FROM dbo.Courses WHERE id=@cid");
+      const cr = await s.apply(pool.request()).input("cid", sql.Int, batch.courseId)
+        .query(`SELECT name, admissionFee FROM dbo.Courses WHERE id=@cid ${s.clause}`);
       const course = cr.recordset[0];
       if (course && course.admissionFee > 0) {
         await createVoucher(pool, {
+          entityId: batch.entityId, branchId: batch.branchId,
           studentId, amount: course.admissionFee, description: `Admission Fee — ${course.name}`,
           items: [{ batchId: null, label: `${course.name} — Admission Fee`, amount: course.admissionFee }],
         });
       }
     }
     res.status(201).json(r.recordset[0]);
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
 // DELETE /api/enrollments/:id
-router.delete("/:id", async (req, res, next) => {
+router.delete("/:id", canWrite, async (req, res, next) => {
   try {
     const pool = await getPool();
+    const s = scope((req as AuthedRequest).ctx);
     const id = Number(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
-    const r = await pool.request().input("id", sql.Int, id)
-      .query("DELETE FROM dbo.Enrollments WHERE id = @id");
+    const r = await s.apply(pool.request()).input("id", sql.Int, id)
+      .query(`DELETE FROM dbo.Enrollments WHERE id = @id ${s.clause}`);
     if (r.rowsAffected[0] === 0) return res.status(404).json({ error: "Enrollment not found" });
     res.status(204).end();
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
 // GET /api/enrollments/transfers/list?studentId=
 router.get("/transfers/list", async (req, res, next) => {
   try {
     const pool = await getPool();
-    const request = pool.request();
+    const s = scope((req as AuthedRequest).ctx, { entityCol: "t.entityId", branchCol: "t.branchId" });
+    const request = s.apply(pool.request());
     let where = "";
     if (req.query.studentId) {
       request.input("sid", sql.Int, Number(req.query.studentId));
-      where = "WHERE t.studentId = @sid";
+      where = "AND t.studentId = @sid";
     }
     const r = await request.query(`
       SELECT t.*, s.fullName AS studentName,
@@ -126,47 +135,51 @@ router.get("/transfers/list", async (req, res, next) => {
       JOIN dbo.Students s ON s.id = t.studentId
       LEFT JOIN dbo.Batches bf ON bf.id = t.fromBatchId
       LEFT JOIN dbo.Batches bt ON bt.id = t.toBatchId
-      ${where}
+      WHERE 1=1 ${s.clause} ${where}
       ORDER BY t.createdAt DESC
     `);
     res.json(r.recordset);
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
 // POST /api/enrollments/transfer — schedule a batch transfer (effective next month)
-router.post("/transfer", async (req, res, next) => {
+router.post("/transfer", canWrite, async (req, res, next) => {
   try {
     const pool = await getPool();
+    const ctx = (req as AuthedRequest).ctx!;
+    const s = scope(ctx);
     const b = req.body || {};
     const studentId = Number(b.studentId);
     const enrollmentId = b.enrollmentId ? Number(b.enrollmentId) : null;
     const toBatchId = Number(b.toBatchId);
     if (!studentId || !toBatchId) return res.status(400).json({ error: "studentId and toBatchId are required" });
 
-    // Resolve the source batch from the enrollment if given.
+    const stu = await s.apply(pool.request()).input("sid", sql.Int, studentId)
+      .query(`SELECT id, branchId FROM dbo.Students WHERE id=@sid ${s.clause}`);
+    const student = stu.recordset[0];
+    if (!student) return res.status(400).json({ error: "Student does not exist" });
+
     let fromBatchId: number | null = b.fromBatchId ? Number(b.fromBatchId) : null;
     if (enrollmentId && !fromBatchId) {
-      const en = await pool.request().input("eid", sql.Int, enrollmentId)
-        .query("SELECT batchId FROM dbo.Enrollments WHERE id = @eid");
+      const en = await s.apply(pool.request()).input("eid", sql.Int, enrollmentId)
+        .query(`SELECT batchId FROM dbo.Enrollments WHERE id = @eid ${s.clause}`);
       fromBatchId = en.recordset[0]?.batchId ?? null;
     }
 
     const effectiveMonth = nextMonth();
     const r = await pool.request()
+      .input("ent", sql.Int, ctx.entityId)
+      .input("branch", sql.Int, student.branchId)
       .input("sid", sql.Int, studentId)
       .input("eid", sql.Int, enrollmentId)
       .input("from", sql.Int, fromBatchId)
       .input("to", sql.Int, toBatchId)
       .input("reason", sql.NVarChar, str(b.reason))
       .input("month", sql.Char, effectiveMonth)
-      .query(`INSERT INTO dbo.Transfers (studentId, enrollmentId, fromBatchId, toBatchId, reason, effectiveMonth)
-              OUTPUT INSERTED.* VALUES (@sid, @eid, @from, @to, @reason, @month)`);
+      .query(`INSERT INTO dbo.Transfers (entityId, branchId, studentId, enrollmentId, fromBatchId, toBatchId, reason, effectiveMonth)
+              OUTPUT INSERTED.* VALUES (@ent, @branch, @sid, @eid, @from, @to, @reason, @month)`);
     res.status(201).json(r.recordset[0]);
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
 export default router;

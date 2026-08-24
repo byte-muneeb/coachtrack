@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { getPool, sql, type SqlPool } from "../db";
 import { logAudit } from "../audit";
+import { requireRole, type AuthedRequest, type TenantCtx } from "../auth";
+import { scope } from "../tenant";
 
 const router = Router();
 
@@ -13,6 +15,10 @@ export const PAYMENT_METHODS = [
   "Bank Challan",
   "Cheque",
 ];
+
+const canCreate = requireRole("entity_admin", "branch_manager", "accountant");
+const canPay = requireRole("entity_admin", "branch_manager", "accountant", "front_desk");
+const adminOnly = requireRole("entity_admin");
 
 function num(v: unknown, fallback = 0): number {
   const n = Number(v);
@@ -29,31 +35,35 @@ function toDate(v: unknown): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
-async function nextVoucherNo(pool: SqlPool, year = new Date().getFullYear()): Promise<string> {
+// Next voucher number, scoped PER ENTITY (numbering restarts per tenant per year).
+async function nextVoucherNo(pool: SqlPool, entityId: number, year = new Date().getFullYear()): Promise<string> {
   const r = await pool.request()
+    .input("ent", sql.Int, entityId)
     .input("prefix", sql.NVarChar, `VCH-${year}-%`)
     .query(
-      "SELECT COALESCE(MAX(CASE WHEN regexp_replace(voucherNo,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(voucherNo,'^.*-','')::int END),0) AS mx FROM Vouchers WHERE voucherNo LIKE @prefix"
+      "SELECT COALESCE(MAX(CASE WHEN regexp_replace(voucherNo,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(voucherNo,'^.*-','')::int END),0) AS mx FROM Vouchers WHERE entityId=@ent AND voucherNo LIKE @prefix"
     );
   return `VCH-${year}-${String((r.recordset[0].mx as number) + 1).padStart(4, "0")}`;
 }
 
 /**
- * Shared voucher creator (used for admission fees, exam fees, and any
- * one-off charge). Creates the voucher + its line items. `billingMonth`
- * is left null for one-time charges so they never clash with monthly generation.
+ * Shared voucher creator. Requires the owning entity + branch (a voucher belongs
+ * to a student, so callers pass the student's entityId/branchId).
  */
 export async function createVoucher(
   pool: SqlPool,
   opts: {
+    entityId: number; branchId: number;
     studentId: number; amount: number; description: string;
     billingMonth?: string | null; generateDate?: Date | null; dueDate?: Date | null; expiryDate?: Date | null;
     items?: { batchId: number | null; label: string; amount: number }[];
   }
 ): Promise<number> {
   const year = opts.billingMonth ? Number(opts.billingMonth.slice(0, 4)) : new Date().getFullYear();
-  const voucherNo = await nextVoucherNo(pool, year);
+  const voucherNo = await nextVoucherNo(pool, opts.entityId, year);
   const vres = await pool.request()
+    .input("ent", sql.Int, opts.entityId)
+    .input("branch", sql.Int, opts.branchId)
     .input("voucherNo", sql.NVarChar, voucherNo)
     .input("studentId", sql.Int, opts.studentId)
     .input("description", sql.NVarChar, opts.description)
@@ -62,17 +72,26 @@ export async function createVoucher(
     .input("dueDate", sql.Date, opts.dueDate || null)
     .input("expiryDate", sql.Date, opts.expiryDate || null)
     .input("month", sql.Char, opts.billingMonth || null)
-    .query(`INSERT INTO dbo.Vouchers (voucherNo, studentId, description, amount, generateDate, dueDate, expiryDate, billingMonth)
-            OUTPUT INSERTED.id VALUES (@voucherNo,@studentId,@description,@amount,@genDate,@dueDate,@expiryDate,@month)`);
+    .query(`INSERT INTO dbo.Vouchers (entityId, branchId, voucherNo, studentId, description, amount, generateDate, dueDate, expiryDate, billingMonth)
+            OUTPUT INSERTED.id VALUES (@ent,@branch,@voucherNo,@studentId,@description,@amount,@genDate,@dueDate,@expiryDate,@month)`);
   const vid = vres.recordset[0].id as number;
   const items = opts.items && opts.items.length ? opts.items : [{ batchId: null, label: opts.description, amount: opts.amount }];
   for (const it of items) {
     await pool.request()
+      .input("ent", sql.Int, opts.entityId)
       .input("vid", sql.Int, vid).input("bid", sql.Int, it.batchId)
       .input("label", sql.NVarChar, it.label).input("amt", sql.Float, it.amount)
-      .query("INSERT INTO dbo.VoucherItems (voucherId, batchId, label, amount) VALUES (@vid,@bid,@label,@amt)");
+      .query("INSERT INTO dbo.VoucherItems (entityId, voucherId, batchId, label, amount) VALUES (@ent,@vid,@bid,@label,@amt)");
   }
   return vid;
+}
+
+// Look up a student within scope; returns { entityId, branchId } or null.
+async function studentScope(pool: SqlPool, ctx: TenantCtx, studentId: number): Promise<{ entityId: number; branchId: number } | null> {
+  const s = scope(ctx);
+  const r = await s.apply(pool.request()).input("sid", sql.Int, studentId)
+    .query(`SELECT entityId, branchId FROM dbo.Students WHERE id=@sid ${s.clause}`);
+  return r.recordset[0] ?? null;
 }
 
 // Selects voucher rows joined with student name/phone + derived overdue flag.
@@ -88,7 +107,8 @@ const LIST_SELECT = `
 router.get("/", async (req, res, next) => {
   try {
     const pool = await getPool();
-    const request = pool.request();
+    const s = scope((req as AuthedRequest).ctx, { entityCol: "v.entityId", branchCol: "v.branchId" });
+    const request = s.apply(pool.request());
     const where: string[] = [];
     if (req.query.studentId) {
       request.input("sid", sql.Int, Number(req.query.studentId));
@@ -97,7 +117,6 @@ router.get("/", async (req, res, next) => {
     const status = String(req.query.status || "").trim();
     if (status && status !== "all") {
       if (status === "unpaid") {
-        // "Unpaid" covers anything with a balance: unpaid OR partial.
         where.push("v.status IN ('unpaid','partial')");
       } else {
         request.input("status", sql.NVarChar, status);
@@ -109,7 +128,6 @@ router.get("/", async (req, res, next) => {
       request.input("month", sql.Char, month);
       where.push("v.billingMonth = @month");
     }
-    // "Search by anything": voucher #, student name, roll (registry ID), phone, description.
     const search = String(req.query.search || "").trim();
     if (search) {
       request.input("search", sql.NVarChar, `%${search}%`);
@@ -117,12 +135,10 @@ router.get("/", async (req, res, next) => {
         "(v.voucherNo LIKE @search OR s.fullName LIKE @search OR s.registryId LIKE @search OR s.phone LIKE @search OR v.description LIKE @search)"
       );
     }
-    const clause = where.length ? "WHERE " + where.join(" AND ") : "";
-    const r = await request.query(`${LIST_SELECT} ${clause} ORDER BY v.createdAt DESC`);
+    const extra = where.length ? "AND " + where.join(" AND ") : "";
+    const r = await request.query(`${LIST_SELECT} WHERE 1=1 ${s.clause} ${extra} ORDER BY v.createdAt DESC`);
     res.json(r.recordset);
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
 router.get("/meta/payment-methods", (_req, res) => res.json(PAYMENT_METHODS));
@@ -131,31 +147,35 @@ router.get("/meta/payment-methods", (_req, res) => res.json(PAYMENT_METHODS));
 router.get("/:id", async (req, res, next) => {
   try {
     const pool = await getPool();
+    const s = scope((req as AuthedRequest).ctx, { entityCol: "v.entityId", branchCol: "v.branchId" });
     const id = Number(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
-    const v = await pool.request().input("id", sql.Int, id).query(`${LIST_SELECT} WHERE v.id = @id`);
+    const v = await s.apply(pool.request()).input("id", sql.Int, id).query(`${LIST_SELECT} WHERE v.id = @id ${s.clause}`);
     if (!v.recordset[0]) return res.status(404).json({ error: "Voucher not found" });
     const items = await pool.request().input("id", sql.Int, id)
       .query("SELECT * FROM dbo.VoucherItems WHERE voucherId = @id ORDER BY id");
     const p = await pool.request().input("id", sql.Int, id)
       .query("SELECT * FROM dbo.Payments WHERE voucherId = @id ORDER BY paidAt DESC");
     res.json({ ...v.recordset[0], items: items.recordset, payments: p.recordset });
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
 // POST /api/vouchers — manual single voucher
-router.post("/", async (req, res, next) => {
+router.post("/", canCreate, async (req, res, next) => {
   try {
     const pool = await getPool();
+    const ctx = (req as AuthedRequest).ctx!;
     const b = req.body || {};
     const studentId = Number(b.studentId);
     if (!studentId) return res.status(400).json({ error: "studentId is required" });
     const amount = num(b.amount);
     if (amount <= 0) return res.status(400).json({ error: "Amount must be greater than 0" });
-    const voucherNo = await nextVoucherNo(pool);
+    const stu = await studentScope(pool, ctx, studentId);
+    if (!stu) return res.status(400).json({ error: "Student does not exist" });
+    const voucherNo = await nextVoucherNo(pool, stu.entityId);
     const r = await pool.request()
+      .input("ent", sql.Int, stu.entityId)
+      .input("branch", sql.Int, stu.branchId)
       .input("voucherNo", sql.NVarChar, voucherNo)
       .input("studentId", sql.Int, studentId)
       .input("description", sql.NVarChar, str(b.description))
@@ -165,11 +185,10 @@ router.post("/", async (req, res, next) => {
       .input("expiryDate", sql.Date, toDate(b.expiryDate))
       .input("feeComponentId", sql.Int, b.feeComponentId ? Number(b.feeComponentId) : null)
       .query(`
-        INSERT INTO dbo.Vouchers (voucherNo, studentId, description, amount, generateDate, dueDate, expiryDate, feeComponentId)
+        INSERT INTO dbo.Vouchers (entityId, branchId, voucherNo, studentId, description, amount, generateDate, dueDate, expiryDate, feeComponentId)
         OUTPUT INSERTED.*
-        VALUES (@voucherNo, @studentId, @description, @amount, @generateDate, @dueDate, @expiryDate, @feeComponentId)
+        VALUES (@ent, @branch, @voucherNo, @studentId, @description, @amount, @generateDate, @dueDate, @expiryDate, @feeComponentId)
       `);
-    // outstanding is derived from the voucher ledger on read — no counter to maintain.
     res.status(201).json(r.recordset[0]);
   } catch (e: unknown) {
     if ((e as { number?: number }).number === 547)
@@ -178,24 +197,24 @@ router.post("/", async (req, res, next) => {
   }
 });
 
-// Core monthly generation logic — shared by the /generate route and the Vercel
-// cron. Applies any due batch transfers first, then creates one combined voucher
-// per student (a line item per batch) for the billing month (YYYY-MM).
+// Core monthly generation — scoped to ONE entity (each voucher inherits the
+// student's branch). Called by the /generate route and by the cron per entity.
 export async function generateMonthlyVouchers(
   pool: SqlPool,
-  opts: { billingMonth: string; generateDate?: Date | null; dueDate?: Date | null; expiryDate?: Date | null }
+  opts: { entityId: number; billingMonth: string; generateDate?: Date | null; dueDate?: Date | null; expiryDate?: Date | null }
 ): Promise<{ month: string; created: number; transfersApplied: number }> {
+    const entityId = opts.entityId;
     const month = opts.billingMonth;
     const genDate = opts.generateDate || new Date();
     const dueDate = opts.dueDate ?? null;
     const expiryDate = opts.expiryDate ?? null;
 
-    // 1) Apply pending transfers effective this month or earlier.
-    const pending = await pool.request().input("m", sql.Char, month)
-      .query("SELECT * FROM dbo.Transfers WHERE status = 'pending' AND effectiveMonth <= @m");
+    // 1) Apply pending transfers (this entity) effective this month or earlier.
+    const pending = await pool.request().input("ent", sql.Int, entityId).input("m", sql.Char, month)
+      .query("SELECT * FROM dbo.Transfers WHERE entityId=@ent AND status = 'pending' AND effectiveMonth <= @m");
     for (const t of pending.recordset) {
-      const nb = await pool.request().input("bid", sql.Int, t.toBatchId)
-        .query("SELECT id, courseId, monthlyFee FROM dbo.Batches WHERE id = @bid");
+      const nb = await pool.request().input("ent", sql.Int, entityId).input("bid", sql.Int, t.toBatchId)
+        .query("SELECT id, courseId, monthlyFee FROM dbo.Batches WHERE id = @bid AND entityId=@ent");
       const newBatch = nb.recordset[0];
       if (newBatch) {
         if (t.enrollmentId) {
@@ -219,32 +238,29 @@ export async function generateMonthlyVouchers(
         .query("UPDATE dbo.Transfers SET status='applied', appliedAt=SYSUTCDATETIME() WHERE id=@id");
     }
 
-    // 2) Students with active fee-bearing enrollments and no voucher yet this month.
-    //    Pull each student's discount % and scholarship (Rs) to apply below.
-    const targets = await pool.request().input("m", sql.Char, month).query(`
-      SELECT e.studentId, SUM(e.monthlyFee) AS total,
+    // 2) Students (this entity) with active fee-bearing enrollments and no voucher yet this month.
+    const targets = await pool.request().input("ent", sql.Int, entityId).input("m", sql.Char, month).query(`
+      SELECT e.studentId, s.branchId AS branchId, SUM(e.monthlyFee) AS total,
              SUM(e.discount) AS discountTotal, MAX(s.scholarship) AS scholarship
       FROM dbo.Enrollments e
       JOIN dbo.Students s ON s.id = e.studentId
-      WHERE e.status = 'active' AND e.monthlyFee > 0
+      WHERE e.entityId=@ent AND e.status = 'active' AND e.monthlyFee > 0
         AND NOT EXISTS (SELECT 1 FROM dbo.Vouchers v WHERE v.studentId = e.studentId AND v.billingMonth = @m)
-      GROUP BY e.studentId
+      GROUP BY e.studentId, s.branchId
       HAVING SUM(e.monthlyFee) > 0
     `);
 
     const year = Number(month.slice(0, 4));
-    const seq0 = await pool.request().input("prefix", sql.NVarChar, `VCH-${year}-%`)
-      .query("SELECT COALESCE(MAX(CASE WHEN regexp_replace(voucherNo,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(voucherNo,'^.*-','')::int END),0) AS mx FROM Vouchers WHERE voucherNo LIKE @prefix");
-    let seq = seq0.recordset[0].mx as number;
+    let seq = (await nextSeqStart(pool, entityId, year));
     const monthName = new Date(year, Number(month.slice(5)) - 1, 1).toLocaleString("en-US", { month: "long" });
 
     let created = 0;
     for (const t of targets.recordset) {
       const gross = t.total as number;
-      const discount = Math.min(t.discountTotal || 0, gross); // amount-based enrollment discounts
+      const discount = Math.min(t.discountTotal || 0, gross);
       const scholarship = Math.min(t.scholarship || 0, Math.max(0, gross - discount));
       const net = Math.max(0, gross - discount - scholarship);
-      if (net <= 0) continue; // fully waived — nothing to bill
+      if (net <= 0) continue;
 
       seq += 1;
       const voucherNo = `VCH-${year}-${String(seq).padStart(4, "0")}`;
@@ -256,6 +272,8 @@ export async function generateMonthlyVouchers(
         WHERE e.studentId=@sid AND e.status='active' AND e.monthlyFee > 0
       `);
       const vres = await pool.request()
+        .input("ent", sql.Int, entityId)
+        .input("branch", sql.Int, t.branchId)
         .input("voucherNo", sql.NVarChar, voucherNo)
         .input("studentId", sql.Int, t.studentId)
         .input("description", sql.NVarChar, `Monthly Fee — ${monthName} ${year}`)
@@ -264,13 +282,13 @@ export async function generateMonthlyVouchers(
         .input("dueDate", sql.Date, dueDate)
         .input("expiryDate", sql.Date, expiryDate)
         .input("month", sql.Char, month)
-        .query(`INSERT INTO dbo.Vouchers (voucherNo, studentId, description, amount, generateDate, dueDate, expiryDate, billingMonth)
-                OUTPUT INSERTED.id VALUES (@voucherNo,@studentId,@description,@amount,@genDate,@dueDate,@expiryDate,@month)`);
+        .query(`INSERT INTO dbo.Vouchers (entityId, branchId, voucherNo, studentId, description, amount, generateDate, dueDate, expiryDate, billingMonth)
+                OUTPUT INSERTED.id VALUES (@ent,@branch,@voucherNo,@studentId,@description,@amount,@genDate,@dueDate,@expiryDate,@month)`);
       const vid = vres.recordset[0].id as number;
       const addItem = (batchId: number | null, label: string, amount: number) =>
-        pool.request().input("vid", sql.Int, vid).input("bid", sql.Int, batchId)
+        pool.request().input("ent", sql.Int, entityId).input("vid", sql.Int, vid).input("bid", sql.Int, batchId)
           .input("label", sql.NVarChar, label).input("amt", sql.Float, amount)
-          .query("INSERT INTO dbo.VoucherItems (voucherId, batchId, label, amount) VALUES (@vid,@bid,@label,@amt)");
+          .query("INSERT INTO dbo.VoucherItems (entityId, voucherId, batchId, label, amount) VALUES (@ent,@vid,@bid,@label,@amt)");
       for (const it of items.recordset) {
         const label = `${it.courseName || "Course"}${it.batchName ? " - " + it.batchName : ""}`;
         await addItem(it.batchId, label, it.monthlyFee);
@@ -283,14 +301,23 @@ export async function generateMonthlyVouchers(
     return { month, created, transfersApplied: pending.recordset.length };
 }
 
-// POST /api/vouchers/generate — monthly voucher generation for ALL active enrollments.
-router.post("/generate", async (req, res, next) => {
+// Highest existing voucher sequence for an entity/year (for batch numbering).
+async function nextSeqStart(pool: SqlPool, entityId: number, year: number): Promise<number> {
+  const r = await pool.request().input("ent", sql.Int, entityId).input("prefix", sql.NVarChar, `VCH-${year}-%`)
+    .query("SELECT COALESCE(MAX(CASE WHEN regexp_replace(voucherNo,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(voucherNo,'^.*-','')::int END),0) AS mx FROM Vouchers WHERE entityId=@ent AND voucherNo LIKE @prefix");
+  return r.recordset[0].mx as number;
+}
+
+// POST /api/vouchers/generate — monthly generation for the caller's entity.
+router.post("/generate", adminOnly, async (req, res, next) => {
   try {
     const pool = await getPool();
+    const ctx = (req as AuthedRequest).ctx!;
     const b = req.body || {};
     const month = String(b.billingMonth || "").trim();
     if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ error: "billingMonth must be YYYY-MM" });
     const result = await generateMonthlyVouchers(pool, {
+      entityId: ctx.entityId!,
       billingMonth: month,
       generateDate: toDate(b.generateDate),
       dueDate: toDate(b.dueDate),
@@ -298,30 +325,31 @@ router.post("/generate", async (req, res, next) => {
     });
     await logAudit(req, "generate", "vouchers", month, `${result.created} voucher(s) generated`);
     res.json(result);
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
-// POST /api/vouchers/charge-exam — charge a course's exam fee (one-time) to all
-// active students enrolled in that course.
-router.post("/charge-exam", async (req, res, next) => {
+// POST /api/vouchers/charge-exam — charge a course's exam fee to its active students.
+router.post("/charge-exam", canCreate, async (req, res, next) => {
   try {
     const pool = await getPool();
+    const s = scope((req as AuthedRequest).ctx);
+    const ctx = (req as AuthedRequest).ctx!;
     const b = req.body || {};
     const courseId = Number(b.courseId);
     if (!courseId) return res.status(400).json({ error: "courseId is required" });
-    const c = await pool.request().input("cid", sql.Int, courseId).query("SELECT name, examFee FROM dbo.Courses WHERE id=@cid");
+    const c = await s.apply(pool.request()).input("cid", sql.Int, courseId).query(`SELECT name, examFee FROM dbo.Courses WHERE id=@cid ${s.clause}`);
     const course = c.recordset[0];
     if (!course) return res.status(404).json({ error: "Course not found" });
     if (!(course.examFee > 0)) return res.status(400).json({ error: "This course has no exam fee set" });
     const dueDate = toDate(b.dueDate);
-    const studs = await pool.request().input("cid", sql.Int, courseId)
-      .query("SELECT DISTINCT studentId FROM dbo.Enrollments WHERE courseId=@cid AND status='active'");
+    const es = scope(ctx, { entityCol: "e.entityId", branchCol: "e.branchId" });
+    const studs = await es.apply(pool.request()).input("cid", sql.Int, courseId)
+      .query(`SELECT DISTINCT e.studentId, st.branchId FROM dbo.Enrollments e JOIN dbo.Students st ON st.id=e.studentId WHERE e.courseId=@cid AND e.status='active' ${es.clause}`);
     let created = 0;
-    for (const s of studs.recordset) {
+    for (const row of studs.recordset) {
       await createVoucher(pool, {
-        studentId: s.studentId, amount: course.examFee, description: `Exam Fee — ${course.name}`,
+        entityId: ctx.entityId!, branchId: row.branchId,
+        studentId: row.studentId, amount: course.examFee, description: `Exam Fee — ${course.name}`,
         dueDate, items: [{ batchId: null, label: `${course.name} — Exam Fee`, amount: course.examFee }],
       });
       created += 1;
@@ -330,20 +358,21 @@ router.post("/charge-exam", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// POST /api/vouchers/apply-late-fees — add the configured late fee to every
-// overdue, unpaid/partial voucher that hasn't been fined yet.
-router.post("/apply-late-fees", async (_req, res, next) => {
+// POST /api/vouchers/apply-late-fees — add the configured late fee to overdue vouchers.
+router.post("/apply-late-fees", adminOnly, async (req, res, next) => {
   try {
     const pool = await getPool();
-    const pr = await pool.request().input("k", sql.NVarChar, "institute.profile")
-      .query("SELECT settingValue FROM dbo.Settings WHERE settingKey=@k");
+    const ctx = (req as AuthedRequest).ctx!;
+    const s = scope(ctx, { entityCol: "v.entityId", branchCol: "v.branchId" });
+    const pr = await pool.request().input("e", sql.Int, ctx.entityId).input("k", sql.NVarChar, "institute.profile")
+      .query("SELECT settingValue FROM dbo.Settings WHERE entityId=@e AND settingKey=@k");
     let mode = "none"; let value = 0;
     try { const p = JSON.parse(pr.recordset[0]?.settingValue || "{}"); mode = p.lateFeeMode || "none"; value = Number(p.lateFeeValue) || 0; } catch { /* ignore */ }
     if (mode === "none" || value <= 0) return res.status(400).json({ error: "Late fee is not configured in Settings." });
 
-    const overdue = await pool.request().query(`
-      SELECT v.id, v.amount, v.paidAmount FROM dbo.Vouchers v
-      WHERE v.status <> 'paid' AND v.dueDate IS NOT NULL AND v.dueDate < CAST(SYSUTCDATETIME() AS DATE)
+    const overdue = await s.apply(pool.request()).query(`
+      SELECT v.id, v.entityId, v.amount, v.paidAmount FROM dbo.Vouchers v
+      WHERE v.status <> 'paid' AND v.dueDate IS NOT NULL AND v.dueDate < CAST(SYSUTCDATETIME() AS DATE) ${s.clause}
         AND NOT EXISTS (SELECT 1 FROM dbo.VoucherItems vi WHERE vi.voucherId = v.id AND vi.label LIKE 'Late Fee%')
     `);
     let applied = 0; let total = 0;
@@ -351,9 +380,9 @@ router.post("/apply-late-fees", async (_req, res, next) => {
       const bal = v.amount - v.paidAmount;
       const fee = mode === "percent" ? Math.round(bal * (value / 100)) : value;
       if (fee <= 0) continue;
-      await pool.request().input("vid", sql.Int, v.id)
+      await pool.request().input("ent", sql.Int, v.entityId).input("vid", sql.Int, v.id)
         .input("label", sql.NVarChar, `Late Fee${mode === "percent" ? ` (${value}%)` : ""}`).input("amt", sql.Float, fee)
-        .query("INSERT INTO dbo.VoucherItems (voucherId, batchId, label, amount) VALUES (@vid,NULL,@label,@amt)");
+        .query("INSERT INTO dbo.VoucherItems (entityId, voucherId, batchId, label, amount) VALUES (@ent,@vid,NULL,@label,@amt)");
       await pool.request().input("vid", sql.Int, v.id).input("fee", sql.Float, fee)
         .query("UPDATE dbo.Vouchers SET amount = amount + @fee, status = CASE WHEN paidAmount > 0 THEN 'partial' ELSE 'unpaid' END, updatedAt=SYSUTCDATETIME() WHERE id=@vid");
       applied += 1; total += fee;
@@ -363,14 +392,17 @@ router.post("/apply-late-fees", async (_req, res, next) => {
 });
 
 // POST /api/vouchers/installments — split a total into N scheduled vouchers.
-router.post("/installments", async (req, res, next) => {
+router.post("/installments", canCreate, async (req, res, next) => {
   try {
     const pool = await getPool();
+    const ctx = (req as AuthedRequest).ctx!;
     const b = req.body || {};
     const studentId = Number(b.studentId);
     const totalAmount = num(b.totalAmount);
     const count = Math.max(1, parseInt(String(b.count), 10) || 0);
     if (!studentId || totalAmount <= 0 || !count) return res.status(400).json({ error: "studentId, totalAmount and count are required" });
+    const stu = await studentScope(pool, ctx, studentId);
+    if (!stu) return res.status(400).json({ error: "Student does not exist" });
     const desc = str(b.description) || "Installment Plan";
     const first = toDate(b.firstDueDate) || new Date();
     const interval = Number(b.intervalDays) || 30;
@@ -381,6 +413,7 @@ router.post("/installments", async (req, res, next) => {
       const amt = base + (i === count - 1 ? remainder : 0);
       const due = new Date(first); due.setDate(due.getDate() + interval * i);
       await createVoucher(pool, {
+        entityId: stu.entityId, branchId: stu.branchId,
         studentId, amount: amt, description: `${desc} (${i + 1}/${count})`, dueDate: due,
         items: [{ batchId: null, label: `${desc} — installment ${i + 1} of ${count}`, amount: amt }],
       });
@@ -394,12 +427,14 @@ router.post("/installments", async (req, res, next) => {
 router.get("/statement/:id", async (req, res, next) => {
   try {
     const pool = await getPool();
+    const s = scope((req as AuthedRequest).ctx);
     const id = Number(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
-    const s = await pool.request().input("id", sql.Int, id).query("SELECT id, fullName, registryId FROM dbo.Students WHERE id=@id");
-    if (!s.recordset[0]) return res.status(404).json({ error: "Student not found" });
-    const vouchers = await pool.request().input("id", sql.Int, id)
-      .query("SELECT id, voucherNo, description, amount, generateDate, createdAt FROM dbo.Vouchers WHERE studentId=@id");
+    const st = await s.apply(pool.request()).input("id", sql.Int, id).query(`SELECT id, fullName, registryId FROM dbo.Students WHERE id=@id ${s.clause}`);
+    if (!st.recordset[0]) return res.status(404).json({ error: "Student not found" });
+    const vs = scope((req as AuthedRequest).ctx, { entityCol: "entityId", branchCol: "branchId" });
+    const vouchers = await vs.apply(pool.request()).input("id", sql.Int, id)
+      .query(`SELECT id, voucherNo, description, amount, generateDate, createdAt FROM dbo.Vouchers WHERE studentId=@id ${vs.clause}`);
     const payments = await pool.request().input("id", sql.Int, id)
       .query("SELECT p.amount, p.method, p.paidAt, v.voucherNo FROM dbo.Payments p JOIN dbo.Vouchers v ON v.id=p.voucherId WHERE v.studentId=@id");
     type Row = { date: Date; type: string; ref: string; description: string; debit: number; credit: number };
@@ -411,13 +446,14 @@ router.get("/statement/:id", async (req, res, next) => {
     const rows = raw.map((r) => { bal += r.debit - r.credit; return { ...r, date: new Date(r.date).toISOString().slice(0, 10), balance: bal }; });
     const billed = vouchers.recordset.reduce((a, v) => a + v.amount, 0);
     const paid = payments.recordset.reduce((a, p) => a + p.amount, 0);
-    res.json({ student: s.recordset[0], rows, totals: { billed, paid, balance: billed - paid } });
+    res.json({ student: st.recordset[0], rows, totals: { billed, paid, balance: billed - paid } });
   } catch (e) { next(e); }
 });
 
 // POST /api/vouchers/:id/payments — record a payment (transactional)
-router.post("/:id/payments", async (req, res, next) => {
+router.post("/:id/payments", canPay, async (req, res, next) => {
   const pool = await getPool();
+  const ctx = (req as AuthedRequest).ctx!;
   const id = Number(req.params.id);
   if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
   const b = req.body || {};
@@ -427,8 +463,9 @@ router.post("/:id/payments", async (req, res, next) => {
   const tx = new sql.Transaction(pool);
   try {
     await tx.begin();
-    const vres = await new sql.Request(tx).input("id", sql.Int, id)
-      .query("SELECT * FROM dbo.Vouchers WITH (UPDLOCK) WHERE id = @id");
+    const s = scope(ctx);
+    const vres = await s.apply(new sql.Request(tx)).input("id", sql.Int, id)
+      .query(`SELECT * FROM dbo.Vouchers WITH (UPDLOCK) WHERE id = @id ${s.clause}`);
     const v = vres.recordset[0];
     if (!v) { await tx.rollback(); return res.status(404).json({ error: "Voucher not found" }); }
 
@@ -439,14 +476,16 @@ router.post("/:id/payments", async (req, res, next) => {
     const newStatus = newPaid >= v.amount ? "paid" : "partial";
 
     const payIns = await new sql.Request(tx)
+      .input("ent", sql.Int, v.entityId)
+      .input("branch", sql.Int, v.branchId)
       .input("voucherId", sql.Int, id)
       .input("amount", sql.Float, applied)
       .input("method", sql.NVarChar, str(b.method))
       .input("reference", sql.NVarChar, str(b.reference))
       .input("receivedBy", sql.NVarChar, str(b.receivedBy))
       .input("paidAt", sql.DateTime2, toDate(b.paidAt) || new Date())
-      .query(`INSERT INTO dbo.Payments (voucherId, amount, method, reference, receivedBy, paidAt)
-              OUTPUT INSERTED.* VALUES (@voucherId, @amount, @method, @reference, @receivedBy, @paidAt)`);
+      .query(`INSERT INTO dbo.Payments (entityId, branchId, voucherId, amount, method, reference, receivedBy, paidAt)
+              OUTPUT INSERTED.* VALUES (@ent, @branch, @voucherId, @amount, @method, @reference, @receivedBy, @paidAt)`);
 
     await new sql.Request(tx)
       .input("id", sql.Int, id)
@@ -456,9 +495,9 @@ router.post("/:id/payments", async (req, res, next) => {
 
     await tx.commit();
 
-    const updated = await pool.request().input("id", sql.Int, id).query(`${LIST_SELECT} WHERE v.id = @id`);
+    const us = scope(ctx, { entityCol: "v.entityId", branchCol: "v.branchId" });
+    const updated = await us.apply(pool.request()).input("id", sql.Int, id).query(`${LIST_SELECT} WHERE v.id = @id ${us.clause}`);
     await logAudit(req, "payment", "voucher", id, `Rs ${applied} received by ${str(b.receivedBy) || "—"}`);
-    // return voucher + the payment just recorded (for the receipt window)
     res.status(201).json({ ...updated.recordset[0], payment: payIns.recordset[0] });
   } catch (e) {
     try { await tx.rollback(); } catch { /* ignore */ }
@@ -466,23 +505,21 @@ router.post("/:id/payments", async (req, res, next) => {
   }
 });
 
-// DELETE /api/vouchers/:id (reverses remaining outstanding)
-router.delete("/:id", async (req, res, next) => {
+// DELETE /api/vouchers/:id
+router.delete("/:id", requireRole("entity_admin", "branch_manager"), async (req, res, next) => {
   try {
     const pool = await getPool();
+    const s = scope((req as AuthedRequest).ctx);
     const id = Number(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
-    const vres = await pool.request().input("id", sql.Int, id)
-      .query("SELECT * FROM dbo.Vouchers WHERE id = @id");
+    const vres = await s.apply(pool.request()).input("id", sql.Int, id)
+      .query(`SELECT * FROM dbo.Vouchers WHERE id = @id ${s.clause}`);
     const v = vres.recordset[0];
     if (!v) return res.status(404).json({ error: "Voucher not found" });
-    // Deleting the voucher removes it from the ledger, so the derived outstanding drops automatically.
-    await pool.request().input("id", sql.Int, id).query("DELETE FROM dbo.Vouchers WHERE id = @id");
+    await s.apply(pool.request()).input("id", sql.Int, id).query(`DELETE FROM dbo.Vouchers WHERE id = @id ${s.clause}`);
     await logAudit(req, "delete", "voucher", id, v.voucherNo);
     res.status(204).end();
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
 export default router;

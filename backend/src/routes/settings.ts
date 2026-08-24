@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { getPool, sql, type SqlPool } from "../db";
+import { requireRole, type AuthedRequest } from "../auth";
 
 const router = Router();
 
@@ -23,11 +24,12 @@ const DEFAULT_PROFILE = {
   autoGenDay: "0",     // day-of-month for scheduled generation (0 = disabled)
 };
 
-async function readProfile(pool: SqlPool) {
+async function readProfile(pool: SqlPool, entityId: number | null) {
   const r = await pool
     .request()
+    .input("e", sql.Int, entityId)
     .input("k", sql.NVarChar, PROFILE_KEY)
-    .query("SELECT settingValue FROM dbo.Settings WHERE settingKey=@k");
+    .query("SELECT settingValue FROM dbo.Settings WHERE entityId=@e AND settingKey=@k");
   const raw = r.recordset[0]?.settingValue;
   if (!raw) return { ...DEFAULT_PROFILE };
   try {
@@ -37,21 +39,22 @@ async function readProfile(pool: SqlPool) {
   }
 }
 
-// GET /api/settings/profile — institute profile + preferences
-router.get("/profile", async (_req, res, next) => {
+// GET /api/settings/profile — institute profile + preferences (any entity user)
+router.get("/profile", async (req, res, next) => {
   try {
     const pool = await getPool();
-    res.json(await readProfile(pool));
+    res.json(await readProfile(pool, (req as AuthedRequest).ctx!.entityId));
   } catch (e) {
     next(e);
   }
 });
 
-// PUT /api/settings/profile — merge-and-save the profile
-router.put("/profile", async (req, res, next) => {
+// PUT /api/settings/profile — merge-and-save the profile (entity_admin only)
+router.put("/profile", requireRole("entity_admin"), async (req, res, next) => {
   try {
     const pool = await getPool();
-    const current = await readProfile(pool);
+    const entityId = (req as AuthedRequest).ctx!.entityId;
+    const current = await readProfile(pool, entityId);
     const b = req.body || {};
     // Only accept known keys; coerce to strings.
     const merged: Record<string, string> = { ...current };
@@ -62,11 +65,12 @@ router.put("/profile", async (req, res, next) => {
 
     await pool
       .request()
+      .input("e", sql.Int, entityId)
       .input("k", sql.NVarChar, PROFILE_KEY)
       .input("v", sql.NVarChar, JSON.stringify(merged))
       .query(`
-        INSERT INTO Settings (settingKey, settingValue, updatedAt) VALUES (@k, @v, now())
-        ON CONFLICT (settingKey) DO UPDATE SET settingValue = EXCLUDED.settingValue, updatedAt = now();
+        INSERT INTO Settings (entityId, settingKey, settingValue, updatedAt) VALUES (@e, @k, @v, now())
+        ON CONFLICT (entityId, settingKey) DO UPDATE SET settingValue = EXCLUDED.settingValue, updatedAt = now();
       `);
     res.json(merged);
   } catch (e) {

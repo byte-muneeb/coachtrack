@@ -4,8 +4,13 @@ import type { Request, Response, NextFunction } from "express";
 const SECRET = process.env.AUTH_SECRET || "coachtrack-dev-secret-change-me";
 const TOKEN_TTL_MS = 1000 * 60 * 60 * 12; // 12 hours
 
-export type AuthUser = { userId: number; username: string; role: string };
-export interface AuthedRequest extends Request { user?: AuthUser }
+export type Role = "super_admin" | "entity_admin" | "branch_manager" | "accountant" | "front_desk" | "teacher";
+// entityId is null only for a super_admin who is NOT impersonating. When a super
+// admin impersonates an entity, entityId is that entity and impersonatorId is set.
+export type AuthUser = { userId: number; username: string; role: string; entityId: number | null; impersonatorId?: number };
+// Per-request tenant context resolved by the tenant middleware (see tenant.ts).
+export interface TenantCtx { entityId: number | null; role: string; branchIds: number[]; allBranches: boolean; impersonatorId?: number }
+export interface AuthedRequest extends Request { user?: AuthUser; ctx?: TenantCtx }
 
 // --- Password hashing (scrypt, salted) ---
 export function hashPassword(pw: string): string {
@@ -36,7 +41,7 @@ export function verifyToken(token: string): AuthUser | null {
   try {
     const body = JSON.parse(Buffer.from(data, "base64url").toString());
     if (!body.exp || body.exp < Date.now()) return null;
-    return { userId: body.userId, username: body.username, role: body.role };
+    return { userId: body.userId, username: body.username, role: body.role, entityId: body.entityId ?? null, impersonatorId: body.impersonatorId };
   } catch { return null; }
 }
 

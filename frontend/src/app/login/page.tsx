@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { authApi, setToken } from "@/lib/api";
+import { authApi, setToken, setUser } from "@/lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -18,8 +18,8 @@ export default function LoginPage() {
     try {
       const { token, user } = await authApi.login(username.trim(), password);
       setToken(token);
-      if (typeof window !== "undefined") window.localStorage.setItem("ct_user", JSON.stringify(user));
-      router.replace("/dashboard");
+      setUser(user);
+      router.replace(user.role === "super_admin" ? "/admin" : "/dashboard");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Login failed");
       setBusy(false);

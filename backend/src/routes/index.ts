@@ -12,6 +12,8 @@ import reminders from "./reminders";
 import settings from "./settings";
 import auth from "./auth";
 import audit from "./audit";
+import admin from "./admin";
+import { requireRole } from "../auth";
 
 const router = Router();
 
@@ -28,6 +30,7 @@ router.use("/reminders", reminders);
 router.use("/settings", settings);
 router.use("/auth", auth);   // /me, /users (login is mounted publicly in app.ts)
 router.use("/audit", audit);
+router.use("/admin", requireRole("super_admin"), admin); // platform super-admin only
 router.use(stats); // /dashboard and /reports (live aggregates)
 
 export default router;

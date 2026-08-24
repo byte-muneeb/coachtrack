@@ -7,39 +7,48 @@ function ym(d: Date): string {
 }
 
 /**
- * Runs monthly voucher generation IF today matches the configured `autoGenDay`
- * and this month hasn't been generated yet. Idempotent and safe to call often
- * (guarded by the `system.lastAutoGen` setting). Used by both the Vercel cron
- * endpoint and the local dev scheduler.
+ * Runs monthly voucher generation for EVERY active entity whose configured
+ * `autoGenDay` is today and which hasn't been generated this month yet.
+ * Idempotent per entity (guarded by each entity's `system.lastAutoGen` setting).
+ * Used by both the Vercel cron endpoint and the local dev scheduler.
  */
 export async function runAutoGenerateIfDue(): Promise<{
-  ran: boolean; reason?: string; month?: string; created?: number;
+  ran: boolean; month: string; created: number; entities: { entityId: number; created: number }[];
 }> {
   const pool = await getPool();
-
-  const pr = await pool.request().input("k", sql.NVarChar, "institute.profile")
-    .query("SELECT settingValue FROM dbo.Settings WHERE settingKey=@k");
-  let day = 0;
-  try { day = Number(JSON.parse(pr.recordset[0]?.settingValue || "{}").autoGenDay) || 0; } catch { /* ignore */ }
-  if (day <= 0) return { ran: false, reason: "autoGenDay not configured" };
-
   const now = new Date();
-  if (now.getDate() !== day) return { ran: false, reason: `today (${now.getDate()}) is not autoGenDay (${day})` };
+  const today = now.getDate();
   const month = ym(now);
 
-  const lr = await pool.request().input("k", sql.NVarChar, "system.lastAutoGen")
-    .query("SELECT settingValue FROM dbo.Settings WHERE settingKey=@k");
-  if (lr.recordset[0]?.settingValue === month) return { ran: false, reason: "already generated this month", month };
+  const ents = await pool.request().query("SELECT id FROM dbo.Entities WHERE status='active'");
+  const results: { entityId: number; created: number }[] = [];
 
-  const dueDate = new Date(`${month}-10`);
-  const expiryDate = new Date(now.getFullYear(), now.getMonth() + 1, 0); // last day of month
-  const result = await generateMonthlyVouchers(pool, { billingMonth: month, generateDate: now, dueDate, expiryDate });
+  for (const e of ents.recordset) {
+    const entityId = e.id as number;
 
-  await pool.request().input("k", sql.NVarChar, "system.lastAutoGen").input("v", sql.NVarChar, month)
-    .query(`INSERT INTO Settings (settingKey, settingValue, updatedAt) VALUES (@k, @v, now())
-            ON CONFLICT (settingKey) DO UPDATE SET settingValue=EXCLUDED.settingValue, updatedAt=now();`);
+    const pr = await pool.request().input("e", sql.Int, entityId).input("k", sql.NVarChar, "institute.profile")
+      .query("SELECT settingValue FROM dbo.Settings WHERE entityId=@e AND settingKey=@k");
+    let day = 0;
+    try { day = Number(JSON.parse(pr.recordset[0]?.settingValue || "{}").autoGenDay) || 0; } catch { /* ignore */ }
+    if (day <= 0 || today !== day) continue;
 
-  return { ran: true, month, created: result.created };
+    const lr = await pool.request().input("e", sql.Int, entityId).input("k", sql.NVarChar, "system.lastAutoGen")
+      .query("SELECT settingValue FROM dbo.Settings WHERE entityId=@e AND settingKey=@k");
+    if (lr.recordset[0]?.settingValue === month) continue; // already generated this month
+
+    const dueDate = new Date(`${month}-10`);
+    const expiryDate = new Date(now.getFullYear(), now.getMonth() + 1, 0); // last day of month
+    const result = await generateMonthlyVouchers(pool, { entityId, billingMonth: month, generateDate: now, dueDate, expiryDate });
+
+    await pool.request().input("e", sql.Int, entityId).input("k", sql.NVarChar, "system.lastAutoGen").input("v", sql.NVarChar, month)
+      .query(`INSERT INTO dbo.Settings (entityId, settingKey, settingValue, updatedAt) VALUES (@e, @k, @v, now())
+              ON CONFLICT (entityId, settingKey) DO UPDATE SET settingValue=EXCLUDED.settingValue, updatedAt=now();`);
+
+    results.push({ entityId, created: result.created });
+  }
+
+  const created = results.reduce((a, r) => a + r.created, 0);
+  return { ran: results.length > 0, month, created, entities: results };
 }
 
 /**

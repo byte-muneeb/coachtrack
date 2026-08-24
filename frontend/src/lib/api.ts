@@ -40,6 +40,22 @@ export function setToken(t: string | null) {
   else window.localStorage.removeItem(TOKEN_KEY);
 }
 
+// Stored user (role/entity drive nav + guards). Written at login/impersonation.
+export const USER_KEY = "ct_user";
+export function getUser(): AppUser | null {
+  if (typeof window === "undefined") return null;
+  try { const raw = window.localStorage.getItem(USER_KEY); return raw ? (JSON.parse(raw) as AppUser) : null; } catch { return null; }
+}
+export function setUser(u: AppUser | null) {
+  if (typeof window === "undefined") return;
+  if (u) window.localStorage.setItem(USER_KEY, JSON.stringify(u));
+  else window.localStorage.removeItem(USER_KEY);
+}
+export function signOut() {
+  setToken(null); setUser(null);
+  if (typeof window !== "undefined") window.location.href = "/login";
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken();
   const res = await fetch(`${BASE}${path}`, {
@@ -366,11 +382,13 @@ export const settingsApi = {
 
 export type Branch = {
   id: number;
+  entityId?: number;
   name: string;
   city: string | null;
   address: string | null;
   phone: string | null;
   manager: string | null;
+  isPrimary?: number;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -425,21 +443,46 @@ export type ReminderQueueItem = {
   studentName: string; voucherNo: string; amount: number; dueDate: string; scheduledFor: string; rule: string; channels: string;
 };
 
-export type AppUser = { id: number; username: string; fullName: string | null; role: string; status?: string; createdAt?: string };
-export type AuditEntry = { id: number; userId: number | null; username: string | null; action: string; entity: string | null; entityId: string | null; detail: string | null; createdAt: string };
+export type Role = "super_admin" | "entity_admin" | "branch_manager" | "accountant" | "front_desk" | "teacher";
+export type AppUser = {
+  id: number; username: string; fullName: string | null; role: Role | string;
+  entityId?: number | null; branchIds?: number[]; allBranches?: boolean;
+  impersonatorId?: number; status?: string; createdAt?: string;
+};
+export type AuditEntry = { id: number; userId: number | null; username: string | null; impersonatorId?: number | null; action: string; entity: string | null; entityId: string | null; detail: string | null; createdAt: string };
 
 export const authApi = {
   login: (username: string, password: string) =>
     request<{ token: string; user: AppUser }>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
-  me: () => request<{ userId: number; username: string; role: string }>("/api/auth/me"),
+  me: () => request<{ userId: number; username: string; role: string; entityId: number | null; branchIds: number[]; allBranches: boolean }>("/api/auth/me"),
   users: () => request<AppUser[]>("/api/auth/users"),
-  createUser: (data: { username: string; password: string; fullName?: string; role?: string }) =>
+  createUser: (data: { username: string; password: string; fullName?: string; role?: string; branchIds?: number[] }) =>
     request<AppUser>("/api/auth/users", { method: "POST", body: JSON.stringify(data) }),
+  updateUser: (id: number, data: { role?: string; branchIds?: number[] }) =>
+    request<{ ok: boolean }>(`/api/auth/users/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   removeUser: (id: number) => request<void>(`/api/auth/users/${id}`, { method: "DELETE" }),
 };
 
 export const auditApi = {
   list: () => request<AuditEntry[]>("/api/audit"),
+};
+
+// ---- Super-admin (platform) : entity management ----
+export type Entity = {
+  id: number; name: string; slug: string; status: string;
+  contactPhone: string | null; contactEmail: string | null;
+  userCount?: number; studentCount?: number; createdAt: string; updatedAt: string;
+};
+
+export const entitiesApi = {
+  list: () => request<Entity[]>("/api/admin/entities"),
+  create: (data: { name: string; slug?: string; contactPhone?: string; contactEmail?: string; adminUsername: string; adminPassword: string; adminFullName?: string }) =>
+    request<{ entity: Entity; mainBranch: Branch; admin: AppUser }>("/api/admin/entities", { method: "POST", body: JSON.stringify(data) }),
+  update: (id: number, data: { name?: string; contactPhone?: string; contactEmail?: string; status?: "active" | "suspended" }) =>
+    request<Entity>(`/api/admin/entities/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  remove: (id: number) => request<void>(`/api/admin/entities/${id}`, { method: "DELETE" }),
+  impersonate: (id: number) =>
+    request<{ token: string; entity: Entity; impersonating: boolean }>(`/api/admin/entities/${id}/impersonate`, { method: "POST" }),
 };
 
 export const remindersApi = {

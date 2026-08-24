@@ -1,8 +1,11 @@
 import { Router } from "express";
 import { getPool, sql, type SqlPool } from "../db";
 import { logAudit } from "../audit";
+import { requireRole, type AuthedRequest } from "../auth";
+import { scope, resolveWriteBranch } from "../tenant";
 
 const router = Router();
+const canWrite = requireRole("entity_admin", "branch_manager", "front_desk");
 
 // Replace the stored `outstanding` with the derived voucher-ledger value.
 function withLiveOutstanding(row: Record<string, unknown>) {
@@ -25,90 +28,91 @@ function str(v: unknown): string | null {
   return s === "" ? null : s;
 }
 
-async function nextRegistryId(pool: SqlPool): Promise<string> {
+// Registry numbering is per entity (survives deletes).
+async function nextRegistryId(pool: SqlPool, entityId: number): Promise<string> {
   const year = new Date().getFullYear();
-  // Use the highest existing numeric suffix for the year (survives deletes).
   const r = await pool
     .request()
+    .input("ent", sql.Int, entityId)
     .input("prefix", sql.NVarChar, `CT-${year}-%`)
     .query(
-      "SELECT COALESCE(MAX(CASE WHEN regexp_replace(registryId,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(registryId,'^.*-','')::int END),0) AS mx FROM Students WHERE registryId LIKE @prefix"
+      "SELECT COALESCE(MAX(CASE WHEN regexp_replace(registryId,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(registryId,'^.*-','')::int END),0) AS mx FROM Students WHERE entityId=@ent AND registryId LIKE @prefix"
     );
   const mx = r.recordset[0].mx as number;
   return `CT-${year}-${String(mx + 1).padStart(4, "0")}`;
 }
 
-// GET /api/students?search=&status=
+// GET /api/students?search=&status=&branch=
 router.get("/", async (req, res, next) => {
   try {
     const pool = await getPool();
-    const search = String(req.query.search || "").trim();
-    const status = String(req.query.status || "").trim();
-    const request = pool.request();
+    const s = scope((req as AuthedRequest).ctx);
+    const request = s.apply(pool.request());
     const where: string[] = [];
+    const status = String(req.query.status || "").trim();
     if (status && status !== "all") {
       request.input("status", sql.NVarChar, status);
       where.push("status = @status");
     }
+    const search = String(req.query.search || "").trim();
     if (search) {
       request.input("search", sql.NVarChar, `%${search}%`);
-      where.push(
-        "(fullName LIKE @search OR registryId LIKE @search OR course LIKE @search OR phone LIKE @search)"
-      );
+      where.push("(fullName LIKE @search OR registryId LIKE @search OR course LIKE @search OR phone LIKE @search)");
     }
     const branch = String(req.query.branch || "").trim();
     if (branch && branch !== "all") {
       request.input("branch", sql.Int, Number(branch));
       where.push("branchId = @branch");
     }
-    const clause = where.length ? "WHERE " + where.join(" AND ") : "";
-    // outstanding is DERIVED from the voucher ledger, never a stored counter.
+    const extra = where.length ? "AND " + where.join(" AND ") : "";
     const result = await request.query(
       `SELECT s.*,
          ISNULL((SELECT SUM(v.amount - v.paidAmount) FROM dbo.Vouchers v WHERE v.studentId = s.id), 0) AS outstandingLive
-       FROM dbo.Students s ${clause} ORDER BY s.createdAt DESC`
+       FROM dbo.Students s WHERE 1=1 ${s.clause} ${extra} ORDER BY s.createdAt DESC`
     );
     res.json(result.recordset.map(withLiveOutstanding));
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
 // GET /api/students/:id  (numeric id or registryId)
 router.get("/:id", async (req, res, next) => {
   try {
     const pool = await getPool();
+    const s = scope((req as AuthedRequest).ctx);
     const { id } = req.params;
-    const request = pool.request();
+    const request = s.apply(pool.request());
     const derived = "ISNULL((SELECT SUM(v.amount - v.paidAmount) FROM dbo.Vouchers v WHERE v.studentId = s.id), 0) AS outstandingLive";
     let query: string;
     if (/^\d+$/.test(id)) {
       request.input("id", sql.Int, Number(id));
-      query = `SELECT s.*, ${derived} FROM dbo.Students s WHERE s.id = @id`;
+      query = `SELECT s.*, ${derived} FROM dbo.Students s WHERE s.id = @id ${s.clause}`;
     } else {
       request.input("rid", sql.NVarChar, id);
-      query = `SELECT s.*, ${derived} FROM dbo.Students s WHERE s.registryId = @rid`;
+      query = `SELECT s.*, ${derived} FROM dbo.Students s WHERE s.registryId = @rid ${s.clause}`;
     }
     const result = await request.query(query);
     const row = result.recordset[0];
     if (!row) return res.status(404).json({ error: "Student not found" });
     res.json(withLiveOutstanding(row));
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
 // POST /api/students
-router.post("/", async (req, res, next) => {
+router.post("/", canWrite, async (req, res, next) => {
   try {
     const pool = await getPool();
+    const ctx = (req as AuthedRequest).ctx!;
     const b = req.body || {};
     if (!b.fullName || !String(b.fullName).trim()) {
       return res.status(400).json({ error: "Full name is required" });
     }
-    const registryId = str(b.registryId) || (await nextRegistryId(pool));
+    const branchId = resolveWriteBranch(ctx, b.branchId != null ? Number(b.branchId) : null);
+    if (branchId == null) return res.status(400).json({ error: "A valid branch is required" });
+    const registryId = str(b.registryId) || (await nextRegistryId(pool, ctx.entityId!));
     const result = await pool
       .request()
+      .input("ent", sql.Int, ctx.entityId)
+      .input("branch", sql.Int, branchId)
       .input("registryId", sql.NVarChar, registryId)
       .input("fullName", sql.NVarChar, String(b.fullName).trim())
       .input("email", sql.NVarChar, str(b.email))
@@ -127,17 +131,16 @@ router.post("/", async (req, res, next) => {
       .input("totalFee", sql.Float, num(b.totalFee))
       .input("outstanding", sql.Float, num(b.outstanding))
       .input("notes", sql.NVarChar, str(b.notes))
-      .input("branchId", sql.Int, b.branchId ? Number(b.branchId) : null)
       .query(`
         INSERT INTO dbo.Students
-          (registryId, fullName, email, phone, dateOfBirth, address, guardianName,
+          (entityId, branchId, registryId, fullName, email, phone, dateOfBirth, address, guardianName,
            guardianRelation, photoUrl, course, batch, commencementDate, status,
-           discountPct, scholarship, totalFee, outstanding, notes, branchId)
+           discountPct, scholarship, totalFee, outstanding, notes)
         OUTPUT INSERTED.*
         VALUES
-          (@registryId, @fullName, @email, @phone, @dateOfBirth, @address, @guardianName,
+          (@ent, @branch, @registryId, @fullName, @email, @phone, @dateOfBirth, @address, @guardianName,
            @guardianRelation, @photoUrl, @course, @batch, @commencementDate, @status,
-           @discountPct, @scholarship, @totalFee, @outstanding, @notes, @branchId)
+           @discountPct, @scholarship, @totalFee, @outstanding, @notes)
       `);
     await logAudit(req, "create", "student", result.recordset[0].id, `${result.recordset[0].fullName} (${result.recordset[0].registryId})`);
     res.status(201).json(result.recordset[0]);
@@ -149,20 +152,27 @@ router.post("/", async (req, res, next) => {
 });
 
 // PUT /api/students/:id
-router.put("/:id", async (req, res, next) => {
+router.put("/:id", canWrite, async (req, res, next) => {
   try {
     const pool = await getPool();
+    const ctx = (req as AuthedRequest).ctx!;
+    const s = scope(ctx);
     const id = Number(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
 
-    const existing = await pool
-      .request()
-      .input("id", sql.Int, id)
-      .query("SELECT * FROM dbo.Students WHERE id = @id");
+    const existing = await s.apply(pool.request()).input("id", sql.Int, id)
+      .query(`SELECT * FROM dbo.Students WHERE id = @id ${s.clause}`);
     const cur = existing.recordset[0];
     if (!cur) return res.status(404).json({ error: "Student not found" });
 
     const b = req.body || {};
+    // Only allow reassigning branch to one within the caller's scope.
+    let branchId = cur.branchId;
+    if (b.branchId !== undefined) {
+      const rb = resolveWriteBranch(ctx, b.branchId != null ? Number(b.branchId) : null);
+      if (rb == null) return res.status(400).json({ error: "Invalid branch" });
+      branchId = rb;
+    }
     const merged = {
       fullName: b.fullName !== undefined ? String(b.fullName).trim() : cur.fullName,
       email: b.email !== undefined ? str(b.email) : cur.email,
@@ -170,24 +180,21 @@ router.put("/:id", async (req, res, next) => {
       dateOfBirth: b.dateOfBirth !== undefined ? toDate(b.dateOfBirth) : cur.dateOfBirth,
       address: b.address !== undefined ? str(b.address) : cur.address,
       guardianName: b.guardianName !== undefined ? str(b.guardianName) : cur.guardianName,
-      guardianRelation:
-        b.guardianRelation !== undefined ? str(b.guardianRelation) : cur.guardianRelation,
+      guardianRelation: b.guardianRelation !== undefined ? str(b.guardianRelation) : cur.guardianRelation,
       photoUrl: b.photoUrl !== undefined ? str(b.photoUrl) : cur.photoUrl,
       course: b.course !== undefined ? str(b.course) : cur.course,
       batch: b.batch !== undefined ? str(b.batch) : cur.batch,
-      commencementDate:
-        b.commencementDate !== undefined ? toDate(b.commencementDate) : cur.commencementDate,
+      commencementDate: b.commencementDate !== undefined ? toDate(b.commencementDate) : cur.commencementDate,
       status: b.status !== undefined ? str(b.status) || "active" : cur.status,
       discountPct: b.discountPct !== undefined ? num(b.discountPct) : cur.discountPct,
       scholarship: b.scholarship !== undefined ? num(b.scholarship) : cur.scholarship,
       totalFee: b.totalFee !== undefined ? num(b.totalFee) : cur.totalFee,
       outstanding: b.outstanding !== undefined ? num(b.outstanding) : cur.outstanding,
       notes: b.notes !== undefined ? str(b.notes) : cur.notes,
-      branchId: b.branchId !== undefined ? (b.branchId ? Number(b.branchId) : null) : cur.branchId,
+      branchId,
     };
 
-    const result = await pool
-      .request()
+    const result = await s.apply(pool.request())
       .input("id", sql.Int, id)
       .input("fullName", sql.NVarChar, merged.fullName)
       .input("email", sql.NVarChar, merged.email)
@@ -206,40 +213,35 @@ router.put("/:id", async (req, res, next) => {
       .input("totalFee", sql.Float, merged.totalFee)
       .input("outstanding", sql.Float, merged.outstanding)
       .input("notes", sql.NVarChar, merged.notes)
-      .input("branchId", sql.Int, merged.branchId ?? null)
+      .input("branch", sql.Int, merged.branchId ?? null)
       .query(`
         UPDATE dbo.Students SET
           fullName=@fullName, email=@email, phone=@phone, dateOfBirth=@dateOfBirth,
           address=@address, guardianName=@guardianName, guardianRelation=@guardianRelation,
           photoUrl=@photoUrl, course=@course, batch=@batch, commencementDate=@commencementDate,
           status=@status, discountPct=@discountPct, scholarship=@scholarship, totalFee=@totalFee,
-          outstanding=@outstanding, notes=@notes, branchId=@branchId, updatedAt=SYSUTCDATETIME()
+          outstanding=@outstanding, notes=@notes, branchId=@branch, updatedAt=SYSUTCDATETIME()
         OUTPUT INSERTED.*
-        WHERE id=@id
+        WHERE id=@id ${s.clause}
       `);
     res.json(result.recordset[0]);
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
 // DELETE /api/students/:id
-router.delete("/:id", async (req, res, next) => {
+router.delete("/:id", canWrite, async (req, res, next) => {
   try {
     const pool = await getPool();
+    const s = scope((req as AuthedRequest).ctx);
     const id = Number(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
-    const result = await pool
-      .request()
-      .input("id", sql.Int, id)
-      .query("DELETE FROM dbo.Students WHERE id = @id");
+    const result = await s.apply(pool.request()).input("id", sql.Int, id)
+      .query(`DELETE FROM dbo.Students WHERE id = @id ${s.clause}`);
     if (result.rowsAffected[0] === 0)
       return res.status(404).json({ error: "Student not found" });
     await logAudit(req, "delete", "student", id);
     res.status(204).end();
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
 export default router;

@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import api from "./routes";
 import { login } from "./routes/auth";
 import { authRequired } from "./auth";
+import { tenantContext } from "./tenant";
 import { ensureSchemaOnce } from "./db";
 import { autoGenerateHandler } from "./routes/internal";
 
@@ -32,7 +33,7 @@ app.use((_req, res, next) => {
 app.post("/api/internal/auto-generate", autoGenerateHandler);
 
 app.post("/api/auth/login", login); // public
-app.use("/api", authRequired, api); // everything else requires a valid token
+app.use("/api", authRequired, tenantContext, api); // everything else requires a valid token + tenant context
 
 // 404
 app.use((_req, res) => {

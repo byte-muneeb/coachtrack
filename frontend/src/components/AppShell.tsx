@@ -6,7 +6,11 @@ import { useEffect, useRef, useState } from "react";
 import { NAV } from "@/lib/nav";
 import { statsApi, setToken } from "@/lib/api";
 
-const ADMIN_ONLY = new Set(["/settings", "/users", "/audit"]);
+// Nav items only an entity_admin sees (institution-wide config/management).
+const ENTITY_ADMIN_ONLY = new Set(["/settings", "/users", "/audit", "/reminders", "/branches"]);
+function roleLabel(role: string) {
+  return role.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
 function initials(name: string) {
   return (name || "?").split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("");
 }
@@ -52,7 +56,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [menu, setMenu] = useState<null | "notif" | "help" | "profile">(null);
   const [notifs, setNotifs] = useState<Notif[]>([]);
   const [notifLoaded, setNotifLoaded] = useState(false);
-  const [user, setUser] = useState<{ username: string; fullName: string | null; role: string } | null>(null);
+  const [user, setUser] = useState<{ username: string; fullName: string | null; role: string; impersonatorId?: number; entityId?: number | null } | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -65,11 +69,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     window.location.href = "/login";
   }
 
-  const role = user?.role || "admin";
+  const role = user?.role || "entity_admin";
   const displayName = user?.fullName || user?.username || "User";
-  const roleLabel = role.charAt(0).toUpperCase() + role.slice(1);
+  const roleName = roleLabel(role);
+  const impersonating = !!user?.impersonatorId;
   const nav = NAV
-    .map((g) => ({ ...g, items: g.items.filter((it) => role === "admin" || !ADMIN_ONLY.has(it.href)) }))
+    .map((g) => ({ ...g, items: g.items.filter((it) => role === "entity_admin" || !ENTITY_ADMIN_ONLY.has(it.href)) }))
     .filter((g) => g.items.length > 0);
 
   // Close any menu when route changes.
@@ -165,7 +170,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </div>
             <div className="min-w-0 flex-1 leading-tight">
               <p className="truncate text-[13px] font-semibold text-white">{displayName}</p>
-              <p className="truncate text-[11px] text-white/45">{roleLabel}</p>
+              <p className="truncate text-[11px] text-white/45">{roleName}</p>
             </div>
             <span className="material-symbols-outlined text-[20px] text-white/40">settings</span>
           </Link>
@@ -175,8 +180,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       {/* ---------- Topbar ---------- */}
       <header className="fixed right-0 top-0 z-40 flex h-16 w-[calc(100%-280px)] items-center justify-between border-b border-outline-variant bg-surface/85 px-margin-desktop backdrop-blur-md shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
         <div className="min-w-0">
-          <p className="truncate font-body-md text-body-md font-semibold text-on-surface">Head Office</p>
-          <p className="truncate font-label-md text-label-md text-on-surface-variant">Coaching Centre Management</p>
+          <p className="truncate font-body-md text-body-md font-semibold text-on-surface">
+            {impersonating ? "Super-admin view" : "Head Office"}
+          </p>
+          <p className="truncate font-label-md text-label-md text-on-surface-variant">
+            {impersonating ? "Impersonating this institute — actions are audited" : "Coaching Centre Management"}
+          </p>
         </div>
 
         <div ref={barRef} className="relative flex items-center gap-xs">
@@ -295,7 +304,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 </span>
                 <div className="min-w-0">
                   <p className="truncate font-body-md text-body-md font-semibold text-on-surface">{displayName}</p>
-                  <p className="truncate font-label-md text-label-md text-on-surface-variant">{roleLabel}</p>
+                  <p className="truncate font-label-md text-label-md text-on-surface-variant">{roleName}</p>
                 </div>
               </div>
               <div className="py-xs">
