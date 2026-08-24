@@ -37,6 +37,7 @@ _backups/
 verify-*.png
 profile-*.png
 students-*.png
+Deploy/
 
 # ---- OS / editor ----
 .DS_Store

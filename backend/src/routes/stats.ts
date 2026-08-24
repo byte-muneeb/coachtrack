@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getPool, sql } from "../db";
+import { getPool, sql, type SqlRequest } from "../db";
 
 const router = Router();
 
@@ -19,20 +19,22 @@ router.get("/dashboard", async (req, res, next) => {
       .input("selYear", sql.Int, monthMatch ? Number(monthMatch[1]) : 2000)
       .input("selMonth", sql.Int, monthMatch ? Number(monthMatch[2]) : 1)
       .query(`
-      DECLARE @start DATE = IIF(@useSel = 1,
-        DATEFROMPARTS(@selYear, @selMonth, 1),
-        DATEFROMPARTS(YEAR(SYSUTCDATETIME()), MONTH(SYSUTCDATETIME()), 1));
-      DECLARE @end DATE = DATEADD(MONTH, 1, @start);
+      WITH span AS (
+        SELECT CASE WHEN @useSel = 1 THEN make_date(@selYear, @selMonth, 1)
+                    ELSE date_trunc('month', now())::date END AS start
+      )
       SELECT
-        (SELECT ISNULL(SUM(amount),0) FROM dbo.Payments) AS totalCollected,
-        (SELECT ISNULL(SUM(amount),0) FROM dbo.Payments
-           WHERE paidAt >= @start AND paidAt < @end) AS revenueMTD,
-        (SELECT ISNULL(SUM(amount - paidAmount),0) FROM dbo.Vouchers) AS totalOutstanding,
-        (SELECT COUNT(*) FROM dbo.Students) AS studentsCount,
-        (SELECT COUNT(*) FROM (SELECT studentId FROM dbo.Vouchers GROUP BY studentId HAVING SUM(amount - paidAmount) > 0) x) AS outstandingStudentsCount,
-        (SELECT COUNT(*) FROM dbo.Students
-           WHERE createdAt >= @start AND createdAt < @end) AS newRegistrationsMTD,
-        CONVERT(CHAR(7), @start, 126) AS selectedMonth
+        (SELECT COALESCE(SUM(amount),0) FROM Payments) AS totalCollected,
+        (SELECT COALESCE(SUM(amount),0) FROM Payments
+           WHERE paidAt >= (SELECT start FROM span)
+             AND paidAt < (SELECT start FROM span) + INTERVAL '1 month') AS revenueMTD,
+        (SELECT COALESCE(SUM(amount - paidAmount),0) FROM Vouchers) AS totalOutstanding,
+        (SELECT COUNT(*) FROM Students) AS studentsCount,
+        (SELECT COUNT(*) FROM (SELECT studentId FROM Vouchers GROUP BY studentId HAVING SUM(amount - paidAmount) > 0) x) AS outstandingStudentsCount,
+        (SELECT COUNT(*) FROM Students
+           WHERE createdAt >= (SELECT start FROM span)
+             AND createdAt < (SELECT start FROM span) + INTERVAL '1 month') AS newRegistrationsMTD,
+        (SELECT to_char(start,'YYYY-MM') FROM span) AS selectedMonth
     `);
     const k = kpi.recordset[0];
     const denom = (k.totalCollected || 0) + (k.totalOutstanding || 0);
@@ -42,12 +44,13 @@ router.get("/dashboard", async (req, res, next) => {
     const trend = await pool.request()
       .input("sel", sql.NVarChar, k.selectedMonth)
       .query(`
-      DECLARE @anchor DATE = DATEFROMPARTS(
-        CAST(LEFT(@sel,4) AS INT), CAST(RIGHT(@sel,2) AS INT), 1);
-      SELECT FORMAT(paidAt, 'yyyy-MM') AS ym, SUM(amount) AS collected
-      FROM dbo.Payments
-      WHERE paidAt >= DATEADD(MONTH, -5, @anchor) AND paidAt < DATEADD(MONTH, 1, @anchor)
-      GROUP BY FORMAT(paidAt, 'yyyy-MM') ORDER BY ym
+      WITH anchor AS (
+        SELECT make_date(CAST(LEFT(@sel,4) AS INT), CAST(RIGHT(@sel,2) AS INT), 1) AS d
+      )
+      SELECT to_char(paidAt, 'YYYY-MM') AS ym, SUM(amount) AS collected
+      FROM Payments, anchor
+      WHERE paidAt >= anchor.d - INTERVAL '5 months' AND paidAt < anchor.d + INTERVAL '1 month'
+      GROUP BY to_char(paidAt, 'YYYY-MM') ORDER BY ym
     `);
 
     const recent = await pool.request().query(`
@@ -71,7 +74,7 @@ router.get("/dashboard", async (req, res, next) => {
 
     // Distinct months that have payments (for the month picker), newest first.
     const months = await pool.request().query(`
-      SELECT DISTINCT FORMAT(paidAt, 'yyyy-MM') AS ym FROM dbo.Payments ORDER BY ym DESC
+      SELECT DISTINCT to_char(paidAt, 'YYYY-MM') AS ym FROM Payments ORDER BY ym DESC
     `);
     const availableMonths: string[] = months.recordset.map((m) => m.ym);
     if (!availableMonths.includes(k.selectedMonth)) availableMonths.unshift(k.selectedMonth);
@@ -105,7 +108,7 @@ router.get("/reports", async (req, res, next) => {
     // Payment date-range predicate (reused across queries).
     const payDate: string[] = [];
     if (from) payDate.push("p.paidAt >= @from");
-    if (to) payDate.push("p.paidAt < DATEADD(DAY,1,@to)");
+    if (to) payDate.push("p.paidAt < @to::date + INTERVAL '1 day'");
     const payDateClause = payDate.length ? "AND " + payDate.join(" AND ") : "";
     // A student "belongs to" the course filter if they have an enrollment in it.
     const courseExists = course
@@ -113,7 +116,7 @@ router.get("/reports", async (req, res, next) => {
       : "";
 
     // Adds the shared filter parameters onto a request.
-    function bind(r: sql.Request): sql.Request {
+    function bind(r: SqlRequest): SqlRequest {
       if (from) r.input("from", sql.Date, from);
       if (to) r.input("to", sql.Date, to);
       if (course) r.input("course", sql.NVarChar, course);
@@ -137,12 +140,12 @@ router.get("/reports", async (req, res, next) => {
 
     // Collections grouped by month within the range.
     const monthly = await bind(pool.request()).query(`
-      SELECT FORMAT(p.paidAt,'yyyy-MM') AS ym, SUM(p.amount) AS collected
-      FROM dbo.Payments p
-      JOIN dbo.Vouchers v ON v.id=p.voucherId
-      JOIN dbo.Students s ON s.id=v.studentId
+      SELECT to_char(p.paidAt,'YYYY-MM') AS ym, SUM(p.amount) AS collected
+      FROM Payments p
+      JOIN Vouchers v ON v.id=p.voucherId
+      JOIN Students s ON s.id=v.studentId
       WHERE 1=1 ${payDateClause} ${courseExists}
-      GROUP BY FORMAT(p.paidAt,'yyyy-MM') ORDER BY ym
+      GROUP BY to_char(p.paidAt,'YYYY-MM') ORDER BY ym
     `);
 
     // Expected monthly billing by course (from active enrollments).

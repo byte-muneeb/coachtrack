@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getPool, sql } from "../db";
+import { getPool, sql, type SqlPool } from "../db";
 
 const router = Router();
 
@@ -15,11 +15,11 @@ function toDate(v: unknown): Date | null {
   const d = new Date(String(v));
   return isNaN(d.getTime()) ? null : d;
 }
-async function nextRegistryId(pool: sql.ConnectionPool): Promise<string> {
+async function nextRegistryId(pool: SqlPool): Promise<string> {
   const year = new Date().getFullYear();
   const r = await pool.request()
     .input("prefix", sql.NVarChar, `CT-${year}-%`)
-    .query("SELECT ISNULL(MAX(TRY_CONVERT(INT, PARSENAME(REPLACE(registryId,'-','.'),1))),0) AS mx FROM dbo.Students WHERE registryId LIKE @prefix");
+    .query("SELECT COALESCE(MAX(CASE WHEN regexp_replace(registryId,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(registryId,'^.*-','')::int END),0) AS mx FROM Students WHERE registryId LIKE @prefix");
   return `CT-${year}-${String((r.recordset[0].mx as number) + 1).padStart(4, "0")}`;
 }
 

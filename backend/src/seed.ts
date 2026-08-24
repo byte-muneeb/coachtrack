@@ -16,13 +16,9 @@ async function main() {
     "Students", "Batches", "Courses", "FeeComponents", "Expenses",
     "Inquiries", "ReminderRules", "Branches", "AuditLog",
   ];
-  for (const t of wipe) {
-    await pool.request().query(`IF OBJECT_ID('dbo.${t}','U') IS NOT NULL DELETE FROM dbo.${t};`);
-  }
-  // Reset identities so ids start clean.
-  for (const t of wipe) {
-    await pool.request().query(`IF OBJECT_ID('dbo.${t}','U') IS NOT NULL DBCC CHECKIDENT('dbo.${t}', RESEED, 0);`);
-  }
+  // TRUNCATE ... RESTART IDENTITY CASCADE clears rows and resets id sequences in
+  // one shot (Postgres). Users/Settings are intentionally left intact.
+  await pool.request().query(`TRUNCATE TABLE ${wipe.join(", ")} RESTART IDENTITY CASCADE;`);
   console.log("Cleared operational tables.");
 
   // 2) Institute profile
@@ -36,9 +32,8 @@ async function main() {
   await pool.request()
     .input("k", sql.NVarChar, "institute.profile")
     .input("v", sql.NVarChar, JSON.stringify(profile))
-    .query(`MERGE dbo.Settings AS t USING (SELECT @k AS k) s ON t.settingKey=s.k
-            WHEN MATCHED THEN UPDATE SET settingValue=@v, updatedAt=SYSUTCDATETIME()
-            WHEN NOT MATCHED THEN INSERT (settingKey,settingValue) VALUES (@k,@v);`);
+    .query(`INSERT INTO Settings (settingKey, settingValue, updatedAt) VALUES (@k, @v, now())
+            ON CONFLICT (settingKey) DO UPDATE SET settingValue=EXCLUDED.settingValue, updatedAt=now();`);
 
   // 3) Courses
   const courses = [

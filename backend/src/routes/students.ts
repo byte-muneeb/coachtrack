@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getPool, sql } from "../db";
+import { getPool, sql, type SqlPool } from "../db";
 import { logAudit } from "../audit";
 
 const router = Router();
@@ -25,14 +25,14 @@ function str(v: unknown): string | null {
   return s === "" ? null : s;
 }
 
-async function nextRegistryId(pool: sql.ConnectionPool): Promise<string> {
+async function nextRegistryId(pool: SqlPool): Promise<string> {
   const year = new Date().getFullYear();
   // Use the highest existing numeric suffix for the year (survives deletes).
   const r = await pool
     .request()
     .input("prefix", sql.NVarChar, `CT-${year}-%`)
     .query(
-      "SELECT ISNULL(MAX(TRY_CONVERT(INT, PARSENAME(REPLACE(registryId, '-', '.'), 1))), 0) AS mx FROM dbo.Students WHERE registryId LIKE @prefix"
+      "SELECT COALESCE(MAX(CASE WHEN regexp_replace(registryId,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(registryId,'^.*-','')::int END),0) AS mx FROM Students WHERE registryId LIKE @prefix"
     );
   const mx = r.recordset[0].mx as number;
   return `CT-${year}-${String(mx + 1).padStart(4, "0")}`;

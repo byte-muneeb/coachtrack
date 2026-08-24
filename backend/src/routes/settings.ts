@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getPool, sql } from "../db";
+import { getPool, sql, type SqlPool } from "../db";
 
 const router = Router();
 
@@ -23,7 +23,7 @@ const DEFAULT_PROFILE = {
   autoGenDay: "0",     // day-of-month for scheduled generation (0 = disabled)
 };
 
-async function readProfile(pool: sql.ConnectionPool) {
+async function readProfile(pool: SqlPool) {
   const r = await pool
     .request()
     .input("k", sql.NVarChar, PROFILE_KEY)
@@ -65,9 +65,8 @@ router.put("/profile", async (req, res, next) => {
       .input("k", sql.NVarChar, PROFILE_KEY)
       .input("v", sql.NVarChar, JSON.stringify(merged))
       .query(`
-        MERGE dbo.Settings AS t USING (SELECT @k AS k) AS s ON t.settingKey = s.k
-        WHEN MATCHED THEN UPDATE SET settingValue = @v, updatedAt = SYSUTCDATETIME()
-        WHEN NOT MATCHED THEN INSERT (settingKey, settingValue) VALUES (@k, @v);
+        INSERT INTO Settings (settingKey, settingValue, updatedAt) VALUES (@k, @v, now())
+        ON CONFLICT (settingKey) DO UPDATE SET settingValue = EXCLUDED.settingValue, updatedAt = now();
       `);
     res.json(merged);
   } catch (e) {

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getPool, sql } from "../db";
+import { getPool, sql, type SqlPool } from "../db";
 import { logAudit } from "../audit";
 
 const router = Router();
@@ -29,11 +29,11 @@ function toDate(v: unknown): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
-async function nextVoucherNo(pool: sql.ConnectionPool, year = new Date().getFullYear()): Promise<string> {
+async function nextVoucherNo(pool: SqlPool, year = new Date().getFullYear()): Promise<string> {
   const r = await pool.request()
     .input("prefix", sql.NVarChar, `VCH-${year}-%`)
     .query(
-      "SELECT ISNULL(MAX(TRY_CONVERT(INT, PARSENAME(REPLACE(voucherNo, '-', '.'), 1))), 0) AS mx FROM dbo.Vouchers WHERE voucherNo LIKE @prefix"
+      "SELECT COALESCE(MAX(CASE WHEN regexp_replace(voucherNo,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(voucherNo,'^.*-','')::int END),0) AS mx FROM Vouchers WHERE voucherNo LIKE @prefix"
     );
   return `VCH-${year}-${String((r.recordset[0].mx as number) + 1).padStart(4, "0")}`;
 }
@@ -44,7 +44,7 @@ async function nextVoucherNo(pool: sql.ConnectionPool, year = new Date().getFull
  * is left null for one-time charges so they never clash with monthly generation.
  */
 export async function createVoucher(
-  pool: sql.ConnectionPool,
+  pool: SqlPool,
   opts: {
     studentId: number; amount: number; description: string;
     billingMonth?: string | null; generateDate?: Date | null; dueDate?: Date | null; expiryDate?: Date | null;
@@ -182,7 +182,7 @@ router.post("/", async (req, res, next) => {
 // cron. Applies any due batch transfers first, then creates one combined voucher
 // per student (a line item per batch) for the billing month (YYYY-MM).
 export async function generateMonthlyVouchers(
-  pool: sql.ConnectionPool,
+  pool: SqlPool,
   opts: { billingMonth: string; generateDate?: Date | null; dueDate?: Date | null; expiryDate?: Date | null }
 ): Promise<{ month: string; created: number; transfersApplied: number }> {
     const month = opts.billingMonth;
@@ -234,7 +234,7 @@ export async function generateMonthlyVouchers(
 
     const year = Number(month.slice(0, 4));
     const seq0 = await pool.request().input("prefix", sql.NVarChar, `VCH-${year}-%`)
-      .query("SELECT ISNULL(MAX(TRY_CONVERT(INT, PARSENAME(REPLACE(voucherNo,'-','.'),1))),0) AS mx FROM dbo.Vouchers WHERE voucherNo LIKE @prefix");
+      .query("SELECT COALESCE(MAX(CASE WHEN regexp_replace(voucherNo,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(voucherNo,'^.*-','')::int END),0) AS mx FROM Vouchers WHERE voucherNo LIKE @prefix");
     let seq = seq0.recordset[0].mx as number;
     const monthName = new Date(year, Number(month.slice(5)) - 1, 1).toLocaleString("en-US", { month: "long" });
 

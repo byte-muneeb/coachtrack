@@ -1,6 +1,9 @@
 // Tiny fetch helper for the CoachTrack backend API.
 
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+// Trailing slashes are stripped so a value like "https://host/" can't produce a
+// double-slash path ("https://host//api/..."), which triggers a preflight redirect
+// that browsers reject with a CORS error.
+const BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000").replace(/\/+$/, "");
 
 export type Student = {
   id: number;

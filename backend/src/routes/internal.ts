@@ -36,9 +36,8 @@ export async function runAutoGenerateIfDue(): Promise<{
   const result = await generateMonthlyVouchers(pool, { billingMonth: month, generateDate: now, dueDate, expiryDate });
 
   await pool.request().input("k", sql.NVarChar, "system.lastAutoGen").input("v", sql.NVarChar, month)
-    .query(`MERGE dbo.Settings AS t USING (SELECT @k AS k) s ON t.settingKey=s.k
-            WHEN MATCHED THEN UPDATE SET settingValue=@v, updatedAt=SYSUTCDATETIME()
-            WHEN NOT MATCHED THEN INSERT (settingKey,settingValue) VALUES (@k,@v);`);
+    .query(`INSERT INTO Settings (settingKey, settingValue, updatedAt) VALUES (@k, @v, now())
+            ON CONFLICT (settingKey) DO UPDATE SET settingValue=EXCLUDED.settingValue, updatedAt=now();`);
 
   return { ran: true, month, created: result.created };
 }

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getPool, sql } from "../db";
+import { getPool, sql, type SqlPool } from "../db";
 
 const router = Router();
 
@@ -74,15 +74,14 @@ router.delete("/rules/:id", async (req, res, next) => {
 });
 
 // ---- Settings (template + automation flag) ----
-async function getSetting(pool: sql.ConnectionPool, key: string): Promise<string | null> {
+async function getSetting(pool: SqlPool, key: string): Promise<string | null> {
   const r = await pool.request().input("k", sql.NVarChar, key).query("SELECT settingValue FROM dbo.Settings WHERE settingKey=@k");
   return r.recordset[0]?.settingValue ?? null;
 }
-async function setSetting(pool: sql.ConnectionPool, key: string, value: string) {
+async function setSetting(pool: SqlPool, key: string, value: string) {
   await pool.request().input("k", sql.NVarChar, key).input("v", sql.NVarChar, value).query(`
-    MERGE dbo.Settings AS t USING (SELECT @k AS k) AS s ON t.settingKey = s.k
-    WHEN MATCHED THEN UPDATE SET settingValue=@v, updatedAt=SYSUTCDATETIME()
-    WHEN NOT MATCHED THEN INSERT (settingKey, settingValue) VALUES (@k, @v);`);
+    INSERT INTO Settings (settingKey, settingValue, updatedAt) VALUES (@k, @v, now())
+    ON CONFLICT (settingKey) DO UPDATE SET settingValue=EXCLUDED.settingValue, updatedAt=now();`);
 }
 
 router.get("/settings", async (_req, res, next) => {
