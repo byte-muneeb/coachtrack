@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getPool, sql, type SqlPool } from "../db";
+import { getPool, sql, nextNumber, type SqlPool } from "../db";
 import { logAudit } from "../audit";
 import { requireRole, type AuthedRequest, type TenantCtx } from "../auth";
 import { scope } from "../tenant";
@@ -36,14 +36,10 @@ function toDate(v: unknown): Date | null {
 }
 
 // Next voucher number, scoped PER ENTITY (numbering restarts per tenant per year).
+// Uses the atomic Counters sequence so concurrent requests can't produce dupes.
 async function nextVoucherNo(pool: SqlPool, entityId: number, year = new Date().getFullYear()): Promise<string> {
-  const r = await pool.request()
-    .input("ent", sql.Int, entityId)
-    .input("prefix", sql.NVarChar, `VCH-${year}-%`)
-    .query(
-      "SELECT COALESCE(MAX(CASE WHEN regexp_replace(voucherNo,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(voucherNo,'^.*-','')::int END),0) AS mx FROM Vouchers WHERE entityId=@ent AND voucherNo LIKE @prefix"
-    );
-  return `VCH-${year}-${String((r.recordset[0].mx as number) + 1).padStart(4, "0")}`;
+  const seq = await nextNumber(pool, { entityId, kind: "voucher", year, table: "Vouchers", column: "voucherNo", prefix: `VCH-${year}-%` });
+  return `VCH-${year}-${String(seq).padStart(4, "0")}`;
 }
 
 /**
@@ -61,29 +57,35 @@ export async function createVoucher(
 ): Promise<number> {
   const year = opts.billingMonth ? Number(opts.billingMonth.slice(0, 4)) : new Date().getFullYear();
   const voucherNo = await nextVoucherNo(pool, opts.entityId, year);
-  const vres = await pool.request()
-    .input("ent", sql.Int, opts.entityId)
-    .input("branch", sql.Int, opts.branchId)
-    .input("voucherNo", sql.NVarChar, voucherNo)
-    .input("studentId", sql.Int, opts.studentId)
-    .input("description", sql.NVarChar, opts.description)
-    .input("amount", sql.Float, opts.amount)
-    .input("genDate", sql.Date, opts.generateDate || new Date())
-    .input("dueDate", sql.Date, opts.dueDate || null)
-    .input("expiryDate", sql.Date, opts.expiryDate || null)
-    .input("month", sql.Char, opts.billingMonth || null)
-    .query(`INSERT INTO dbo.Vouchers (entityId, branchId, voucherNo, studentId, description, amount, generateDate, dueDate, expiryDate, billingMonth)
-            OUTPUT INSERTED.id VALUES (@ent,@branch,@voucherNo,@studentId,@description,@amount,@genDate,@dueDate,@expiryDate,@month)`);
-  const vid = vres.recordset[0].id as number;
-  const items = opts.items && opts.items.length ? opts.items : [{ batchId: null, label: opts.description, amount: opts.amount }];
-  for (const it of items) {
-    await pool.request()
+  // The voucher and its line items must land together — one transaction.
+  const tx = new sql.Transaction(pool);
+  await tx.begin();
+  try {
+    const vres = await new sql.Request(tx)
       .input("ent", sql.Int, opts.entityId)
-      .input("vid", sql.Int, vid).input("bid", sql.Int, it.batchId)
-      .input("label", sql.NVarChar, it.label).input("amt", sql.Float, it.amount)
-      .query("INSERT INTO dbo.VoucherItems (entityId, voucherId, batchId, label, amount) VALUES (@ent,@vid,@bid,@label,@amt)");
-  }
-  return vid;
+      .input("branch", sql.Int, opts.branchId)
+      .input("voucherNo", sql.NVarChar, voucherNo)
+      .input("studentId", sql.Int, opts.studentId)
+      .input("description", sql.NVarChar, opts.description)
+      .input("amount", sql.Float, opts.amount)
+      .input("genDate", sql.Date, opts.generateDate || new Date())
+      .input("dueDate", sql.Date, opts.dueDate || null)
+      .input("expiryDate", sql.Date, opts.expiryDate || null)
+      .input("month", sql.Char, opts.billingMonth || null)
+      .query(`INSERT INTO dbo.Vouchers (entityId, branchId, voucherNo, studentId, description, amount, generateDate, dueDate, expiryDate, billingMonth)
+              OUTPUT INSERTED.id VALUES (@ent,@branch,@voucherNo,@studentId,@description,@amount,@genDate,@dueDate,@expiryDate,@month)`);
+    const vid = vres.recordset[0].id as number;
+    const items = opts.items && opts.items.length ? opts.items : [{ batchId: null, label: opts.description, amount: opts.amount }];
+    for (const it of items) {
+      await new sql.Request(tx)
+        .input("ent", sql.Int, opts.entityId)
+        .input("vid", sql.Int, vid).input("bid", sql.Int, it.batchId)
+        .input("label", sql.NVarChar, it.label).input("amt", sql.Float, it.amount)
+        .query("INSERT INTO dbo.VoucherItems (entityId, voucherId, batchId, label, amount) VALUES (@ent,@vid,@bid,@label,@amt)");
+    }
+    await tx.commit();
+    return vid;
+  } catch (e) { try { await tx.rollback(); } catch { /* ignore */ } throw e; }
 }
 
 // Look up a student within scope; returns { entityId, branchId } or null.
@@ -380,11 +382,18 @@ router.post("/apply-late-fees", adminOnly, async (req, res, next) => {
       const bal = v.amount - v.paidAmount;
       const fee = mode === "percent" ? Math.round(bal * (value / 100)) : value;
       if (fee <= 0) continue;
-      await pool.request().input("ent", sql.Int, v.entityId).input("vid", sql.Int, v.id)
-        .input("label", sql.NVarChar, `Late Fee${mode === "percent" ? ` (${value}%)` : ""}`).input("amt", sql.Float, fee)
-        .query("INSERT INTO dbo.VoucherItems (entityId, voucherId, batchId, label, amount) VALUES (@ent,@vid,NULL,@label,@amt)");
-      await pool.request().input("vid", sql.Int, v.id).input("fee", sql.Float, fee)
-        .query("UPDATE dbo.Vouchers SET amount = amount + @fee, status = CASE WHEN paidAmount > 0 THEN 'partial' ELSE 'unpaid' END, updatedAt=SYSUTCDATETIME() WHERE id=@vid");
+      // The line item and the amount bump must land together, or a retry would be
+      // skipped by the NOT EXISTS guard above and leave the voucher under-charged.
+      const tx = new sql.Transaction(pool);
+      await tx.begin();
+      try {
+        await new sql.Request(tx).input("ent", sql.Int, v.entityId).input("vid", sql.Int, v.id)
+          .input("label", sql.NVarChar, `Late Fee${mode === "percent" ? ` (${value}%)` : ""}`).input("amt", sql.Float, fee)
+          .query("INSERT INTO dbo.VoucherItems (entityId, voucherId, batchId, label, amount) VALUES (@ent,@vid,NULL,@label,@amt)");
+        await new sql.Request(tx).input("vid", sql.Int, v.id).input("fee", sql.Float, fee)
+          .query("UPDATE dbo.Vouchers SET amount = amount + @fee, status = CASE WHEN paidAmount > 0 THEN 'partial' ELSE 'unpaid' END, updatedAt=SYSUTCDATETIME() WHERE id=@vid");
+        await tx.commit();
+      } catch (e) { try { await tx.rollback(); } catch { /* ignore */ } throw e; }
       applied += 1; total += fee;
     }
     res.json({ applied, total, mode });
@@ -516,6 +525,9 @@ router.delete("/:id", requireRole("entity_admin", "branch_manager"), async (req,
       .query(`SELECT * FROM dbo.Vouchers WHERE id = @id ${s.clause}`);
     const v = vres.recordset[0];
     if (!v) return res.status(404).json({ error: "Voucher not found" });
+    // Never destroy recorded payment history — block delete once anything is paid.
+    if (Number(v.paidAmount) > 0 || v.status === "paid" || v.status === "partial")
+      return res.status(409).json({ error: "This voucher has recorded payments and cannot be deleted. Cancel or adjust it instead." });
     await s.apply(pool.request()).input("id", sql.Int, id).query(`DELETE FROM dbo.Vouchers WHERE id = @id ${s.clause}`);
     await logAudit(req, "delete", "voucher", id, v.voucherNo);
     res.status(204).end();

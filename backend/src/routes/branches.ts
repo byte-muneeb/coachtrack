@@ -56,6 +56,7 @@ router.put("/:id", requireRole("entity_admin"), async (req, res, next) => {
     const cur = ex.recordset[0];
     if (!cur) return res.status(404).json({ error: "Branch not found" });
     const b = req.body || {};
+    if (b.name !== undefined && !String(b.name).trim()) return res.status(400).json({ error: "Branch name is required" });
     const r = await pool.request()
       .input("id", sql.Int, id)
       .input("ent", sql.Int, ctx.entityId)
@@ -78,6 +79,15 @@ router.delete("/:id", requireRole("entity_admin"), async (req, res, next) => {
     const ctx = (req as AuthedRequest).ctx!;
     const id = Number(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    // Refuse to delete a branch that still holds data — the FK cascade would
+    // otherwise silently wipe its students, batches, vouchers and payments.
+    const use = await pool.request().input("id", sql.Int, id).input("ent", sql.Int, ctx.entityId)
+      .query(`SELECT
+                (SELECT COUNT(*) FROM dbo.Students s WHERE s.branchId=@id AND s.entityId=@ent) AS students,
+                (SELECT COUNT(*) FROM dbo.Batches  b WHERE b.branchId=@id AND b.entityId=@ent) AS batches`);
+    const u = use.recordset[0];
+    if (Number(u.students) > 0 || Number(u.batches) > 0)
+      return res.status(409).json({ error: `Branch has ${u.students} student(s) and ${u.batches} batch(es). Move or remove them before deleting this branch.` });
     const r = await pool.request().input("id", sql.Int, id).input("ent", sql.Int, ctx.entityId)
       .query("DELETE FROM dbo.Branches WHERE id=@id AND entityId=@ent");
     if (r.rowsAffected[0] === 0) return res.status(404).json({ error: "Branch not found" });

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getPool, sql, type SqlPool } from "../db";
+import { getPool, sql, nextNumber, type SqlPool } from "../db";
 import { requireRole, type AuthedRequest } from "../auth";
 import { scope, resolveWriteBranch } from "../tenant";
 
@@ -18,14 +18,11 @@ function toDate(v: unknown): Date | null {
   const d = new Date(String(v));
   return isNaN(d.getTime()) ? null : d;
 }
-// Registry numbering is per entity.
+// Registry numbering is per entity — atomic Counters sequence (race-proof).
 async function nextRegistryId(pool: SqlPool, entityId: number): Promise<string> {
   const year = new Date().getFullYear();
-  const r = await pool.request()
-    .input("ent", sql.Int, entityId)
-    .input("prefix", sql.NVarChar, `CT-${year}-%`)
-    .query("SELECT COALESCE(MAX(CASE WHEN regexp_replace(registryId,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(registryId,'^.*-','')::int END),0) AS mx FROM Students WHERE entityId=@ent AND registryId LIKE @prefix");
-  return `CT-${year}-${String((r.recordset[0].mx as number) + 1).padStart(4, "0")}`;
+  const seq = await nextNumber(pool, { entityId, kind: "registry", year, table: "Students", column: "registryId", prefix: `CT-${year}-%` });
+  return `CT-${year}-${String(seq).padStart(4, "0")}`;
 }
 
 // GET /api/inquiries?stage=&search=

@@ -91,6 +91,7 @@ router.patch("/entities/:id", async (req, res, next) => {
     const cur = ex.recordset[0];
     if (!cur || cur.status === "deleted") return res.status(404).json({ error: "Entity not found" });
     const b = req.body || {};
+    if (b.name !== undefined && !String(b.name).trim()) return res.status(400).json({ error: "Entity name is required" });
     const status = ["active", "suspended"].includes(b.status) ? b.status : cur.status;
     const r = await pool.request()
       .input("id", sql.Int, id)

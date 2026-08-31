@@ -89,9 +89,15 @@ export default function VouchersPage() {
   }
   async function bulkDelete() {
     if (!confirm(`Delete ${selected.size} selected voucher(s)? This cannot be undone.`)) return;
-    for (const id of selected) { try { await vouchersApi.remove(id); } catch { /* skip */ } }
-    setSelected(new Set());
+    let failed = 0; let lastMsg = "";
+    const remaining = new Set<number>();
+    for (const id of selected) {
+      try { await vouchersApi.remove(id); }
+      catch (e) { failed += 1; remaining.add(id); lastMsg = e instanceof Error ? e.message : "delete failed"; }
+    }
+    setSelected(remaining); // keep the ones that couldn't be deleted selected
     await load();
+    setError(failed ? `${failed} voucher(s) could not be deleted (${lastMsg}). Vouchers with recorded payments cannot be deleted.` : null);
   }
 
   const load = useCallback(async () => {

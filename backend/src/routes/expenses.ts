@@ -1,9 +1,11 @@
 import { Router } from "express";
 import { getPool, sql } from "../db";
-import { type AuthedRequest } from "../auth";
+import { requireRole, type AuthedRequest } from "../auth";
 import { scope, resolveWriteBranch } from "../tenant";
 
 const router = Router();
+// Only finance/management roles may record or change expenses (not teachers/front desk).
+const canWrite = requireRole("entity_admin", "branch_manager", "accountant");
 
 function num(v: unknown, fallback = 0): number { const n = Number(v); return isNaN(n) ? fallback : n; }
 function str(v: unknown): string | null {
@@ -37,7 +39,7 @@ router.get("/summary", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post("/", async (req, res, next) => {
+router.post("/", canWrite, async (req, res, next) => {
   try {
     const pool = await getPool();
     const ctx = (req as AuthedRequest).ctx!;
@@ -59,7 +61,7 @@ router.post("/", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.put("/:id", async (req, res, next) => {
+router.put("/:id", canWrite, async (req, res, next) => {
   try {
     const pool = await getPool();
     const s = scope((req as AuthedRequest).ctx);
@@ -83,7 +85,7 @@ router.put("/:id", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.delete("/:id", async (req, res, next) => {
+router.delete("/:id", canWrite, async (req, res, next) => {
   try {
     const pool = await getPool();
     const s = scope((req as AuthedRequest).ctx);

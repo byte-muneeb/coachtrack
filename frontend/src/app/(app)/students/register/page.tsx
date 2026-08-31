@@ -14,6 +14,7 @@ export default function RegisterPage() {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [createdId, setCreatedId] = useState<number | null>(null);
 
   // personal / guardian
   const [fullName, setFullName] = useState("");
@@ -99,8 +100,21 @@ export default function RegisterPage() {
         notes: notes || null,
       });
       // create each batch enrollment (fees come from the batch)
+      const failures: string[] = [];
       for (const en of enrollments) {
-        try { await enrollmentsApi.create({ studentId: created.id, batchId: en.batchId, discount: en.discount || 0 }); } catch { /* skip dup */ }
+        try {
+          await enrollmentsApi.create({ studentId: created.id, batchId: en.batchId, discount: en.discount || 0 });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "enrollment failed";
+          if (!/already enrolled/i.test(msg)) failures.push(`${en.batchName || "batch"} — ${msg}`);
+        }
+      }
+      if (failures.length) {
+        // The student was saved; don't lose it, but surface the enrollment problem.
+        setCreatedId(created.id);
+        setError(`Student saved, but some enrollments failed: ${failures.join("; ")}. Open the student to finish enrolling.`);
+        setSaving(false);
+        return;
       }
       router.push(`/students/${created.id}`);
     } catch (e) {
@@ -123,7 +137,12 @@ export default function RegisterPage() {
         </div>
 
         {error && (
-          <div className="rounded-lg border border-error bg-error-container px-md py-sm font-body-md text-body-md text-on-error-container">{error}</div>
+          <div className="rounded-lg border border-error bg-error-container px-md py-sm font-body-md text-body-md text-on-error-container">
+            {error}
+            {createdId && (
+              <> <Link href={`/students/${createdId}`} className="font-semibold underline">Open student →</Link></>
+            )}
+          </div>
         )}
 
         {/* Personal */}

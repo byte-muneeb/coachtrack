@@ -44,6 +44,7 @@ export default function StudentProfilePage() {
   const [addCourse, setAddCourse] = useState("");
   const [addBatch, setAddBatch] = useState("");
   const [addDiscount, setAddDiscount] = useState(0);
+  const [enrolling, setEnrolling] = useState(false);
   const [transferFor, setTransferFor] = useState<Enrollment | null>(null);
   const [statementOpen, setStatementOpen] = useState(false);
 
@@ -113,12 +114,14 @@ export default function StudentProfilePage() {
   }
 
   async function addEnrollment() {
-    if (!student || !addBatch) return;
+    if (!student || !addBatch || enrolling) return;
+    setEnrolling(true);
     try {
       await enrollmentsApi.create({ studentId: student.id, batchId: Number(addBatch), discount: addDiscount });
       setAddCourse(""); setAddBatch(""); setAddDiscount(0);
       await load();
     } catch (e) { alert(e instanceof Error ? e.message : "Could not enroll"); }
+    finally { setEnrolling(false); }
   }
   async function removeEnrollment(en: Enrollment) {
     if (!confirm(`Remove enrollment in ${en.courseName || "course"} — ${en.batchName || "batch"}?`)) return;
@@ -249,8 +252,8 @@ export default function StudentProfilePage() {
               <span className="font-label-md text-label-md text-on-surface-variant">Discount (Rs)</span>
               <input type="number" min={0} inputMode="numeric" onKeyDown={numberGuard} onWheel={noWheel} className={inputCls} value={addDiscount} onChange={(e) => setAddDiscount(Math.max(0, Number(e.target.value) || 0))} />
             </label>
-            <button onClick={addEnrollment} disabled={!addBatch} className="flex items-center gap-xs rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90 disabled:opacity-50">
-              <span className="material-symbols-outlined text-[18px]">add</span> Enroll
+            <button onClick={addEnrollment} disabled={!addBatch || enrolling} className="flex items-center gap-xs rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90 disabled:opacity-50">
+              <span className="material-symbols-outlined text-[18px]">add</span> {enrolling ? "Enrolling…" : "Enroll"}
             </button>
           </div>
 

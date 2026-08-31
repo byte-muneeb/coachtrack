@@ -207,6 +207,7 @@ function BatchManager({ course, onClose, onChanged }: { course: Course; onClose:
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [status, setStatus] = useState("active");
+  const [busy, setBusy] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -218,7 +219,8 @@ function BatchManager({ course, onClose, onChanged }: { course: Course; onClose:
 
   async function add(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (!name.trim() || busy) return;
+    setBusy(true);
     try {
       await coursesApi.addBatch(course.id, {
         name, timeSlot: timeSlot || null, teacher: teacher || null,
@@ -229,6 +231,7 @@ function BatchManager({ course, onClose, onChanged }: { course: Course; onClose:
       setMonthlyFee("0"); setStartDate(""); setEndDate(""); setStatus("active");
       await reload(); onChanged();
     } catch (e) { alert(e instanceof Error ? e.message : "Failed"); }
+    finally { setBusy(false); }
   }
   async function del(b: Batch) {
     if (!confirm(`Delete batch "${b.name}"?`)) return;
@@ -258,7 +261,7 @@ function BatchManager({ course, onClose, onChanged }: { course: Course; onClose:
               {["upcoming", "active", "completed"].map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </label>
-          <button type="submit" className="rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90">Add batch</button>
+          <button type="submit" disabled={busy} className="rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90 disabled:opacity-60">{busy ? "Adding…" : "Add batch"}</button>
         </form>
 
         {loading ? (

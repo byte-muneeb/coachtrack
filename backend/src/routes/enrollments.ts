@@ -83,23 +83,35 @@ router.post("/", canWrite, async (req, res, next) => {
       .input("fee", sql.Float, isNaN(monthlyFee) ? batch.monthlyFee : monthlyFee)
       .input("disc", sql.Float, discount)
       .input("start", sql.Date, b.startDate ? new Date(String(b.startDate)) : null)
+      // ON CONFLICT makes the duplicate-active guard race-proof (unique partial index).
       .query(`INSERT INTO dbo.Enrollments (entityId, branchId, studentId, batchId, courseId, monthlyFee, discount, startDate)
-              OUTPUT INSERTED.* VALUES (@ent, @branch, @sid, @bid, @cid, @fee, @disc, @start)`);
+              VALUES (@ent, @branch, @sid, @bid, @cid, @fee, @disc, @start)
+              ON CONFLICT (studentId, batchId) WHERE status='active' DO NOTHING
+              RETURNING *`);
+    if (!r.recordset[0]) return res.status(400).json({ error: "Student already enrolled in this batch" });
 
     // Charge the course admission fee once (on the first enrollment in that course).
+    // Best-effort: the enrollment is already committed, so a voucher failure must
+    // not discard it — surface a warning instead of losing the enrollment.
+    let warning: string | undefined;
     if (firstInCourse) {
-      const cr = await s.apply(pool.request()).input("cid", sql.Int, batch.courseId)
-        .query(`SELECT name, admissionFee FROM dbo.Courses WHERE id=@cid ${s.clause}`);
-      const course = cr.recordset[0];
-      if (course && course.admissionFee > 0) {
-        await createVoucher(pool, {
-          entityId: batch.entityId, branchId: batch.branchId,
-          studentId, amount: course.admissionFee, description: `Admission Fee — ${course.name}`,
-          items: [{ batchId: null, label: `${course.name} — Admission Fee`, amount: course.admissionFee }],
-        });
+      try {
+        const cr = await s.apply(pool.request()).input("cid", sql.Int, batch.courseId)
+          .query(`SELECT name, admissionFee FROM dbo.Courses WHERE id=@cid ${s.clause}`);
+        const course = cr.recordset[0];
+        if (course && course.admissionFee > 0) {
+          await createVoucher(pool, {
+            entityId: batch.entityId, branchId: batch.branchId,
+            studentId, amount: course.admissionFee, description: `Admission Fee — ${course.name}`,
+            items: [{ batchId: null, label: `${course.name} — Admission Fee`, amount: course.admissionFee }],
+          });
+        }
+      } catch (e) {
+        console.error("enroll: admission-fee voucher failed", e);
+        warning = "Enrolled, but the admission-fee voucher could not be created — add it manually.";
       }
     }
-    res.status(201).json(r.recordset[0]);
+    res.status(201).json({ ...r.recordset[0], warning });
   } catch (e) { next(e); }
 });
 
@@ -158,6 +170,11 @@ router.post("/transfer", canWrite, async (req, res, next) => {
       .query(`SELECT id, branchId FROM dbo.Students WHERE id=@sid ${s.clause}`);
     const student = stu.recordset[0];
     if (!student) return res.status(400).json({ error: "Student does not exist" });
+
+    // The destination batch must belong to the caller's tenant (never trust the client id).
+    const tb = await s.apply(pool.request()).input("bid", sql.Int, toBatchId)
+      .query(`SELECT id FROM dbo.Batches WHERE id=@bid ${s.clause}`);
+    if (!tb.recordset[0]) return res.status(400).json({ error: "Destination batch does not exist" });
 
     let fromBatchId: number | null = b.fromBatchId ? Number(b.fromBatchId) : null;
     if (enrollmentId && !fromBatchId) {

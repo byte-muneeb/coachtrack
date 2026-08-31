@@ -57,11 +57,12 @@ export async function runAutoGenerateIfDue(): Promise<{
  * anything that doesn't match, so the endpoint can't be triggered by outsiders.
  */
 export async function autoGenerateHandler(req: Request, res: Response) {
+  // Fail closed: without a configured secret the endpoint stays locked, so it can
+  // never be triggered anonymously if CRON_SECRET is missing in an environment.
   const secret = process.env.CRON_SECRET;
-  if (secret) {
-    const auth = req.headers.authorization || "";
-    if (auth !== `Bearer ${secret}`) return res.status(401).json({ error: "unauthorized" });
-  }
+  if (!secret) { console.error("auto-generate blocked: CRON_SECRET is not set"); return res.status(503).json({ error: "cron secret not configured" }); }
+  const auth = req.headers.authorization || "";
+  if (auth !== `Bearer ${secret}`) return res.status(401).json({ error: "unauthorized" });
   try {
     await ensureSchemaOnce();
     const out = await runAutoGenerateIfDue();

@@ -122,14 +122,19 @@ function ImportSection({
   );
 }
 
+// Courses import is entity_admin / branch_manager only (front_desk gets 403).
+const COURSE_ROLES = new Set(["entity_admin", "branch_manager"]);
+
 export default function ImportPage() {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchId, setBranchId] = useState<number | null>(null);
   const [allowed, setAllowed] = useState(true);
+  const [role, setRole] = useState<string>("");
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     const u = getUser();
+    if (u) setRole(String(u.role));
     if (u && !ALLOWED.has(String(u.role))) { setAllowed(false); return; }
     branchesApi.list().then((b) => {
       setBranches(b);
@@ -170,7 +175,10 @@ export default function ImportPage() {
         <div className="mt-lg space-y-lg">
           <ImportSection
             step={1} title="Import Courses" templateName="courses-template.csv"
-            hint="Columns: name (required), code, level, durationMonths, admissionFee, monthlyFee, examFee, branch. Duplicate course names (any capitalisation) are skipped."
+            hint={COURSE_ROLES.has(role)
+              ? "Columns: name (required), code, level, durationMonths, admissionFee, monthlyFee, examFee, branch. Duplicate course names (any capitalisation) are skipped."
+              : "Only an admin or branch manager can import courses. Ask them to run this step first, then import your students."}
+            disabled={!COURSE_ROLES.has(role)}
             cols={COURSE_COLS} example={COURSE_EX}
             run={guardBranch((rows, validateOnly, bId) => coursesApi.importRows({ rows, branchId: bId, validateOnly }))}
           />

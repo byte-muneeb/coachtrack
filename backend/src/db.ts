@@ -248,8 +248,10 @@ export async function ensureSchema(): Promise<void> {
   const pool = await getPool();
   const run = (q: string) => pool.request().query(q);
 
-  // Retired modules (Tests, Attendance, Teacher Payroll): drop legacy tables.
-  await run(`DROP TABLE IF EXISTS TestResults, Tests, Attendance, Teachers CASCADE;`);
+  // Retired modules (Tests, Teacher Payroll): drop legacy tables.
+  // NOTE: Attendance is an ACTIVE table (created below) — it must NOT be dropped
+  // here, or every serverless cold start would erase all attendance data.
+  await run(`DROP TABLE IF EXISTS TestResults, Tests, Teachers CASCADE;`);
 
   // --- Tenancy backbone ---
   await run(`
@@ -581,6 +583,18 @@ export async function ensureSchema(): Promise<void> {
       createdAt      TIMESTAMPTZ NOT NULL DEFAULT now()
     );`);
 
+  // Atomic per-entity, per-year sequence backing human-readable IDs
+  // (registry numbers, voucher numbers). One row per (entity, kind, year); the
+  // number is handed out via a single upsert so concurrent requests can't collide.
+  await run(`
+    CREATE TABLE IF NOT EXISTS Counters (
+      entityId INT  NOT NULL,
+      kind     TEXT NOT NULL,
+      year     INT  NOT NULL,
+      seq      INT  NOT NULL DEFAULT 0,
+      PRIMARY KEY (entityId, kind, year)
+    );`);
+
   // --- Indexes for the isolation filters (run on every query) ---
   await run(`CREATE INDEX IF NOT EXISTS idx_students_eb    ON Students(entityId, branchId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_courses_eb     ON Courses(entityId, branchId);`);
@@ -589,6 +603,8 @@ export async function ensureSchema(): Promise<void> {
   await run(`CREATE INDEX IF NOT EXISTS idx_vouchers_eb    ON Vouchers(entityId, branchId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_payments_eb    ON Payments(entityId, branchId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_enrollments_eb ON Enrollments(entityId, branchId);`);
+  // At most one ACTIVE enrollment per (student, batch) — makes the enroll guard race-proof.
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS uq_enroll_active ON Enrollments(studentId, batchId) WHERE status='active';`);
   await run(`CREATE INDEX IF NOT EXISTS idx_expenses_eb    ON Expenses(entityId, branchId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_inquiries_eb   ON Inquiries(entityId, branchId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_attendance_ebd ON Attendance(entityId, branchId, date);`);
@@ -601,13 +617,32 @@ export async function ensureSchema(): Promise<void> {
     "SELECT COUNT(*) AS c FROM Users WHERE role = 'super_admin'"
   );
   if (Number(sa.recordset[0].c) === 0) {
+    // ON CONFLICT keeps concurrent cold starts from racing on the seed insert.
     await pool.request()
       .input("u", sql.NVarChar, "superadmin")
       .input("p", sql.NVarChar, hashPassword("admin123"))
       .input("n", sql.NVarChar, "Platform Super Admin")
-      .query("INSERT INTO Users (entityId, username, passwordHash, fullName, role, status) VALUES (NULL, @u, @p, @n, 'super_admin', 'active')");
+      .query("INSERT INTO Users (entityId, username, passwordHash, fullName, role, status) VALUES (NULL, @u, @p, @n, 'super_admin', 'active') ON CONFLICT (username) DO NOTHING");
     console.log("Seeded platform super admin (superadmin / admin123).");
   }
+}
+
+// Hand out the next per-entity sequence number for `kind` in `year`, atomically.
+// Seeds from any pre-existing rows on first use (so legacy IDs are never reused),
+// then increments purely in the Counters row. Race-proof under concurrent requests;
+// a rolled-back caller simply leaves a gap, which is fine for these IDs.
+export async function nextNumber(
+  pool: SqlPool,
+  opts: { entityId: number; kind: string; year: number; table: string; column: string; prefix: string }
+): Promise<number> {
+  const seed = `(SELECT COALESCE(MAX(CASE WHEN regexp_replace(${opts.column},'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(${opts.column},'^.*-','')::int END),0) FROM ${opts.table} WHERE entityId=@e AND ${opts.column} LIKE @prefix)`;
+  const r = await pool.request()
+    .input("e", sql.Int, opts.entityId).input("k", sql.NVarChar, opts.kind)
+    .input("y", sql.Int, opts.year).input("prefix", sql.NVarChar, opts.prefix)
+    .query(`INSERT INTO Counters (entityId, kind, year, seq) VALUES (@e,@k,@y, ${seed} + 1)
+            ON CONFLICT (entityId, kind, year) DO UPDATE SET seq = Counters.seq + 1
+            RETURNING seq`);
+  return r.recordset[0].seq as number;
 }
 
 // Memoized: runs the DDL once per warm instance; a no-op after the first request.

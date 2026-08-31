@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getPool, sql, type SqlPool } from "../db";
+import { getPool, sql, nextNumber, type SqlPool } from "../db";
 import { logAudit } from "../audit";
 import { requireRole, type AuthedRequest } from "../auth";
 import { scope, resolveWriteBranch } from "../tenant";
@@ -53,12 +53,8 @@ router.post("/import", canWrite, async (req, res, next) => {
     const brRes = await bs.apply(pool.request()).query(`SELECT id, name FROM dbo.Branches WHERE 1=1 ${bs.clause}`);
     const branchMap = new Map<string, number>(brRes.recordset.map((b: { id: number; name: string }) => [lc(b.name), b.id]));
 
-    // Registry auto-numbering seed (per entity, current year).
+    // Registry ids are auto-numbered per row via the atomic Counters sequence.
     const year = new Date().getFullYear();
-    const mxRes = await pool.request().input("ent", sql.Int, ctx.entityId).input("prefix", sql.NVarChar, `CT-${year}-%`)
-      .query("SELECT COALESCE(MAX(CASE WHEN regexp_replace(registryId,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(registryId,'^.*-','')::int END),0) AS mx FROM Students WHERE entityId=@ent AND registryId LIKE @prefix");
-    let seq = mxRes.recordset[0].mx as number;
-
     const result: ImportResult = { validateOnly, total: rows.length, created: 0, skipped: [], errors: [] };
     const seenReg = new Set<string>();
     const seenPhone = new Set<string>();
@@ -107,64 +103,85 @@ router.post("/import", canWrite, async (req, res, next) => {
         result.skipped.push({ row: rn, reason: `Phone ${phone} already exists` }); continue;
       }
 
-      // Registry id: provided (dedupe) or auto-generated.
+      // Registry id: if provided, dedupe now; otherwise auto-generated at insert time.
       let registryId = trimStr(g("registryid", "regno", "rollno", "roll", "registrationno"));
       if (registryId) {
         if (regSet.has(lc(registryId)) || seenReg.has(lc(registryId))) {
           result.skipped.push({ row: rn, reason: `Registry ID ${registryId} already exists` }); continue;
         }
-      } else {
-        seq += 1;
-        registryId = `CT-${year}-${String(seq).padStart(4, "0")}`;
+        seenReg.add(lc(registryId));
       }
-
-      seenReg.add(lc(registryId));
       if (phone) seenPhone.add(lc(phone));
 
       const startDate = toDateStr(g("commencementdate", "joindate", "admissiondate"));
       if (!validateOnly) {
-        const ins = await pool.request()
-          .input("ent", sql.Int, ctx.entityId).input("branch", sql.Int, branchId)
-          .input("rid", sql.NVarChar, registryId).input("name", sql.NVarChar, fullName)
-          .input("email", sql.NVarChar, trimStr(g("email")))
-          .input("phone", sql.NVarChar, phone)
-          .input("dob", sql.Date, toDateStr(g("dateofbirth", "dob")))
-          .input("addr", sql.NVarChar, trimStr(g("address")))
-          .input("gname", sql.NVarChar, trimStr(g("guardianname", "guardian", "parentname", "fathername")))
-          .input("grel", sql.NVarChar, trimStr(g("guardianrelation", "relation")))
-          .input("course", sql.NVarChar, courseName)
-          .input("batch", sql.NVarChar, batchCell)
-          .input("comm", sql.Date, startDate)
-          .input("status", sql.NVarChar, trimStr(g("status")) || "active")
-          .input("disc", sql.Float, toNum(g("discountpct", "discount")))
-          .input("schol", sql.Float, toNum(g("scholarship")))
-          .input("notes", sql.NVarChar, trimStr(g("notes")))
-          .query(`INSERT INTO dbo.Students
-                    (entityId, branchId, registryId, fullName, email, phone, dateOfBirth, address, guardianName, guardianRelation, course, batch, commencementDate, status, discountPct, scholarship, notes)
-                  OUTPUT INSERTED.id
-                  VALUES (@ent,@branch,@rid,@name,@email,@phone,@dob,@addr,@gname,@grel,@course,@batch,@comm,@status,@disc,@schol,@notes)`);
-        const newStudentId = ins.recordset[0].id as number;
-
-        // Create the active enrollment + charge the course admission fee once
-        // (this student is new, so it is always their first enrollment in the course).
-        if (enrollBatch) {
-          await pool.request()
-            .input("ent", sql.Int, ctx.entityId).input("branch", sql.Int, enrollBatch.branchId)
-            .input("sid", sql.Int, newStudentId).input("bid", sql.Int, enrollBatch.id)
-            .input("cid", sql.Int, enrollBatch.courseId).input("fee", sql.Float, enrollBatch.monthlyFee)
-            .input("start", sql.Date, startDate)
-            .query(`INSERT INTO dbo.Enrollments (entityId, branchId, studentId, batchId, courseId, monthlyFee, startDate)
-                    VALUES (@ent,@branch,@sid,@bid,@cid,@fee,@start)`);
-          const cr = await pool.request().input("cid", sql.Int, enrollBatch.courseId).input("ent", sql.Int, ctx.entityId)
-            .query(`SELECT name, admissionFee FROM dbo.Courses WHERE id=@cid AND entityId=@ent`);
-          const course = cr.recordset[0];
-          if (course && course.admissionFee > 0) {
-            await createVoucher(pool, {
-              entityId: ctx.entityId!, branchId: enrollBatch.branchId,
-              studentId: newStudentId, amount: course.admissionFee, description: `Admission Fee — ${course.name}`,
-              items: [{ batchId: null, label: `${course.name} — Admission Fee`, amount: course.admissionFee }],
-            });
+        try {
+          // Auto-number via the atomic counter; never reuse an id seen in-file or in the DB.
+          if (!registryId) {
+            do {
+              registryId = `CT-${year}-${String(await nextNumber(pool, { entityId: ctx.entityId!, kind: "registry", year, table: "Students", column: "registryId", prefix: `CT-${year}-%` })).padStart(4, "0")}`;
+            } while (seenReg.has(lc(registryId)) || regSet.has(lc(registryId)));
+            seenReg.add(lc(registryId));
           }
+
+          // Student + its batch enrollment must land together — one transaction per row.
+          const tx = new sql.Transaction(pool);
+          await tx.begin();
+          let newStudentId: number;
+          try {
+            const ins = await new sql.Request(tx)
+              .input("ent", sql.Int, ctx.entityId).input("branch", sql.Int, branchId)
+              .input("rid", sql.NVarChar, registryId).input("name", sql.NVarChar, fullName)
+              .input("email", sql.NVarChar, trimStr(g("email")))
+              .input("phone", sql.NVarChar, phone)
+              .input("dob", sql.Date, toDateStr(g("dateofbirth", "dob")))
+              .input("addr", sql.NVarChar, trimStr(g("address")))
+              .input("gname", sql.NVarChar, trimStr(g("guardianname", "guardian", "parentname", "fathername")))
+              .input("grel", sql.NVarChar, trimStr(g("guardianrelation", "relation")))
+              .input("course", sql.NVarChar, courseName)
+              .input("batch", sql.NVarChar, batchCell)
+              .input("comm", sql.Date, startDate)
+              .input("status", sql.NVarChar, trimStr(g("status")) || "active")
+              .input("disc", sql.Float, toNum(g("discountpct", "discount")))
+              .input("schol", sql.Float, toNum(g("scholarship")))
+              .input("notes", sql.NVarChar, trimStr(g("notes")))
+              .query(`INSERT INTO dbo.Students
+                        (entityId, branchId, registryId, fullName, email, phone, dateOfBirth, address, guardianName, guardianRelation, course, batch, commencementDate, status, discountPct, scholarship, notes)
+                      OUTPUT INSERTED.id
+                      VALUES (@ent,@branch,@rid,@name,@email,@phone,@dob,@addr,@gname,@grel,@course,@batch,@comm,@status,@disc,@schol,@notes)`);
+            newStudentId = ins.recordset[0].id as number;
+            if (enrollBatch) {
+              await new sql.Request(tx)
+                .input("ent", sql.Int, ctx.entityId).input("branch", sql.Int, enrollBatch.branchId)
+                .input("sid", sql.Int, newStudentId).input("bid", sql.Int, enrollBatch.id)
+                .input("cid", sql.Int, enrollBatch.courseId).input("fee", sql.Float, enrollBatch.monthlyFee)
+                .input("start", sql.Date, startDate)
+                .query(`INSERT INTO dbo.Enrollments (entityId, branchId, studentId, batchId, courseId, monthlyFee, startDate)
+                        VALUES (@ent,@branch,@sid,@bid,@cid,@fee,@start)`);
+            }
+            await tx.commit();
+          } catch (e) { try { await tx.rollback(); } catch { /* ignore */ } throw e; }
+
+          // Admission fee is best-effort (its own transaction) — a billing hiccup
+          // must not undo the committed student/enrollment.
+          if (enrollBatch) {
+            try {
+              const cr = await pool.request().input("cid", sql.Int, enrollBatch.courseId).input("ent", sql.Int, ctx.entityId)
+                .query(`SELECT name, admissionFee FROM dbo.Courses WHERE id=@cid AND entityId=@ent`);
+              const course = cr.recordset[0];
+              if (course && course.admissionFee > 0) {
+                await createVoucher(pool, {
+                  entityId: ctx.entityId!, branchId: enrollBatch.branchId,
+                  studentId: newStudentId, amount: course.admissionFee, description: `Admission Fee — ${course.name}`,
+                  items: [{ batchId: null, label: `${course.name} — Admission Fee`, amount: course.admissionFee }],
+                });
+              }
+            } catch (e) { console.error(`import row ${rn}: admission-fee voucher failed`, e); }
+          }
+        } catch (e) {
+          // One bad row shouldn't abort the whole file — record it and move on.
+          result.errors.push({ row: rn, reason: e instanceof Error ? e.message : "Insert failed" });
+          continue;
         }
       }
       result.created += 1;
@@ -195,18 +212,12 @@ function str(v: unknown): string | null {
   return s === "" ? null : s;
 }
 
-// Registry numbering is per entity (survives deletes).
+// Registry numbering is per entity (survives deletes). Uses the atomic Counters
+// sequence so two concurrent admissions can never receive the same number.
 async function nextRegistryId(pool: SqlPool, entityId: number): Promise<string> {
   const year = new Date().getFullYear();
-  const r = await pool
-    .request()
-    .input("ent", sql.Int, entityId)
-    .input("prefix", sql.NVarChar, `CT-${year}-%`)
-    .query(
-      "SELECT COALESCE(MAX(CASE WHEN regexp_replace(registryId,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(registryId,'^.*-','')::int END),0) AS mx FROM Students WHERE entityId=@ent AND registryId LIKE @prefix"
-    );
-  const mx = r.recordset[0].mx as number;
-  return `CT-${year}-${String(mx + 1).padStart(4, "0")}`;
+  const seq = await nextNumber(pool, { entityId, kind: "registry", year, table: "Students", column: "registryId", prefix: `CT-${year}-%` });
+  return `CT-${year}-${String(seq).padStart(4, "0")}`;
 }
 
 // GET /api/students?search=&status=&branch=
