@@ -457,7 +457,7 @@ function BulkVoucherPrint({ ids, profile, onClose }: { ids: number[]; profile: I
           <button onClick={onClose} className="rounded-lg border border-outline-variant bg-surface-container-lowest px-md py-sm font-label-md text-label-md text-on-surface hover:bg-surface-container-high">Close</button>
         </div>
         {!vouchers ? (
-          <div className="rounded-md bg-white p-xl text-center text-neutral-600">Loading {ids.length} vouchers…</div>
+          <div className="rounded-md bg-white p-xl text-center text-black">Loading {ids.length} vouchers…</div>
         ) : (
           <div className="space-y-lg">
             {vouchers.map((v) => {
@@ -466,8 +466,8 @@ function BulkVoucherPrint({ ids, profile, onClose }: { ids: number[]; profile: I
               return (
                 <div key={v.id} className="print-area rounded-md border border-neutral-300 bg-white p-lg text-black" style={{ breakAfter: "page" }}>
                   <div className="flex items-start justify-between border-b-2 border-black pb-sm">
-                    <div><p className="text-[16px] font-bold">{name}</p><p className="text-[11px] text-neutral-600">Fee Voucher</p></div>
-                    <div className="text-right"><p className="font-mono-data text-[13px] font-bold">{v.voucherNo}</p>{v.billingMonth ? <p className="text-[11px] text-neutral-600">{v.billingMonth}</p> : null}</div>
+                    <div><p className="text-[16px] font-bold">{name}</p><p className="text-[11px] text-black">Fee Voucher</p></div>
+                    <div className="text-right"><p className="font-mono-data text-[13px] font-bold">{v.voucherNo}</p>{v.billingMonth ? <p className="text-[11px] text-black">{v.billingMonth}</p> : null}</div>
                   </div>
                   <div className="mt-sm flex justify-between text-[12px]">
                     <span>{v.studentName} ({v.studentRegistryId})</span>
@@ -502,8 +502,8 @@ function VoucherPrint({ voucher, profile, onClose }: { voucher: Voucher; profile
   const items = voucher.items && voucher.items.length > 0 ? voucher.items : null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-auto bg-black/50 p-lg backdrop-blur-sm print:static print:bg-white print:p-0 print:backdrop-blur-none">
-      <div className="w-full max-w-[760px]">
+    <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-auto bg-black/50 p-lg print:static print:bg-white print:p-0">
+      <div className="w-full max-w-[720px]">
         <div className="mb-md flex items-center justify-end gap-sm no-print">
           <button onClick={() => window.print()} className="flex items-center gap-xs rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90">
             <span className="material-symbols-outlined text-[18px]">print</span> Print
@@ -511,67 +511,65 @@ function VoucherPrint({ voucher, profile, onClose }: { voucher: Voucher; profile
           <button onClick={onClose} className="rounded-lg border border-outline-variant bg-surface-container-lowest px-md py-sm font-label-md text-label-md text-on-surface hover:bg-surface-container-high">Close</button>
         </div>
 
-        <div className="print-area relative overflow-hidden rounded-2xl border border-outline-variant bg-white text-on-surface shadow-pop">
-          {/* header band */}
-          <div className="relative flex items-start justify-between bg-gradient-to-r from-[#0d1a33] via-[#0a1f45] to-[#0058be] px-xl py-lg text-white">
-            <div className="flex items-center gap-md">
-              <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/12 ring-1 ring-white/20"><span className="material-symbols-outlined text-[30px]">school</span></span>
-              <div>
-                <p className="text-[22px] font-bold leading-tight">{name}</p>
-                {profile?.tagline ? <p className="text-[12px] text-white/70">{profile.tagline}</p> : null}
-                <p className="text-[11px] text-white/60">{[line2, profile?.phone ? `Tel: ${profile.phone}` : ""].filter(Boolean).join("  ·  ")}</p>
-              </div>
-            </div>
-            <div className="text-right">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/70">Fee Voucher</p>
-              <p className="font-mono-data text-[16px] font-bold">{voucher.voucherNo}</p>
-              {voucher.billingMonth ? <p className="text-[11px] text-white/60">{voucher.billingMonth}</p> : null}
-            </div>
+        {/* Official black-and-white fee voucher */}
+        <div className="print-area relative border border-black bg-white p-xl text-black">
+          {/* Letterhead */}
+          <div className="border-b-2 border-black pb-md text-center">
+            <p className="text-[20px] font-bold uppercase tracking-wide">{name}</p>
+            {profile?.tagline ? <p className="text-[11px]">{profile.tagline}</p> : null}
+            {line2 ? <p className="text-[12px]">{line2}</p> : null}
+            {profile?.phone ? <p className="text-[12px]">Tel: {profile.phone}</p> : null}
+            <p className="mt-sm text-[13px] font-semibold uppercase tracking-[0.25em]">Fee Voucher</p>
           </div>
 
-          <div className="relative px-xl py-lg">
-            {/* PAID watermark */}
-            {paid && (
-              <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 -rotate-[18deg] rounded-2xl border-4 border-green-500/30 px-lg py-xs text-[52px] font-black tracking-widest text-green-500/15">
-                PAID
-              </span>
-            )}
+          {/* PAID stamp — plain black outline */}
+          {paid && (
+            <span className="pointer-events-none absolute right-[40px] top-[128px] -rotate-[12deg] border-[3px] border-black px-md py-[2px] text-[30px] font-black tracking-widest">PAID</span>
+          )}
 
-            {/* meta panel */}
-            <div className="grid grid-cols-3 gap-md rounded-xl border border-outline-variant bg-surface-container-low p-md">
-              <div><p className="text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">Student</p><p className="text-[14px] font-semibold text-primary">{voucher.studentName}</p><p className="font-mono-data text-[11px] text-on-surface-variant">{voucher.studentRegistryId}</p></div>
-              <div><p className="text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">Generated</p><p className="text-[14px] text-on-surface">{fmtDate(voucher.generateDate) || "—"}</p></div>
-              <div className="text-right"><p className="text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">Due · Expiry</p><p className="text-[14px] font-semibold text-primary">{fmtDate(voucher.dueDate) || "—"}</p><p className="text-[11px] text-error">exp {fmtDate(voucher.expiryDate) || "—"}</p></div>
-            </div>
-
-            {/* items */}
-            <table className="mt-lg w-full text-left">
-              <thead><tr className="border-b-2 border-primary/15 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant"><th className="pb-[6px]">Description</th><th className="pb-[6px] text-right">Amount</th></tr></thead>
-              <tbody>
-                {items ? items.map((it) => (
-                  <tr key={it.id} className="border-b border-dashed border-outline-variant"><td className="py-[7px] text-[13px]">{it.label}</td><td className="py-[7px] text-right font-mono-data text-[13px]">{rs(it.amount)}</td></tr>
-                )) : (
-                  <tr className="border-b border-dashed border-outline-variant"><td className="py-[7px] text-[13px]">{voucher.description || "Fee"}</td><td className="py-[7px] text-right font-mono-data text-[13px]">{rs(voucher.amount)}</td></tr>
-                )}
-                <tr className="border-b border-dashed border-outline-variant"><td className="py-[7px] text-[13px] text-on-surface-variant">Total Billed</td><td className="py-[7px] text-right font-mono-data text-[13px]">{rs(voucher.amount)}</td></tr>
-                {voucher.paidAmount > 0 && (
-                  <tr className="border-b border-dashed border-outline-variant"><td className="py-[7px] text-[13px] text-green-700">Already Paid</td><td className="py-[7px] text-right font-mono-data text-[13px] text-green-700">− {rs(voucher.paidAmount)}</td></tr>
-                )}
-              </tbody>
-            </table>
-
-            <div className="mt-md flex items-center justify-between rounded-xl bg-gradient-to-r from-[#0d1a33] to-[#0058be] px-lg py-md text-white">
-              <span className="text-[13px] font-semibold uppercase tracking-wide text-white/80">Amount Payable</span>
-              <span className="font-mono-data text-[24px] font-bold">{rs(remaining > 0 ? remaining : 0)}</span>
-            </div>
-
-            <p className="mt-lg text-[12px] italic text-on-surface-variant">{profile?.voucherFooter || "Please pay before the due date to avoid a late fee."}</p>
-            <div className="mt-xl grid grid-cols-2 gap-xl">
-              <div className="border-t border-outline-variant pt-xs text-center text-[11px] uppercase tracking-wide text-on-surface-variant">Accounts Signature</div>
-              <div className="border-t border-outline-variant pt-xs text-center text-[11px] uppercase tracking-wide text-on-surface-variant">Received By / Bank Stamp</div>
-            </div>
+          {/* meta */}
+          <div className="mt-md grid grid-cols-2 gap-x-lg gap-y-[2px] text-[12px]">
+            <div className="flex justify-between border-b border-black/40 py-[3px]"><span>Voucher No</span><span className="font-mono-data font-semibold">{voucher.voucherNo}</span></div>
+            <div className="flex justify-between border-b border-black/40 py-[3px]"><span>Billing Month</span><span>{voucher.billingMonth || "—"}</span></div>
+            <div className="flex justify-between border-b border-black/40 py-[3px]"><span>Student</span><span className="font-medium">{voucher.studentName}</span></div>
+            <div className="flex justify-between border-b border-black/40 py-[3px]"><span>Roll No</span><span className="font-mono-data">{voucher.studentRegistryId}</span></div>
+            <div className="flex justify-between border-b border-black/40 py-[3px]"><span>Generated</span><span>{fmtDate(voucher.generateDate) || "—"}</span></div>
+            <div className="flex justify-between border-b border-black/40 py-[3px]"><span>Due Date</span><span className="font-semibold">{fmtDate(voucher.dueDate) || "—"}</span></div>
+            {voucher.expiryDate ? <div className="flex justify-between border-b border-black/40 py-[3px]"><span>Valid Till</span><span>{fmtDate(voucher.expiryDate)}</span></div> : null}
           </div>
-          <div className="h-[6px] w-full bg-gradient-to-r from-[#0d1a33] via-[#0058be] to-sky-400" />
+
+          {/* items */}
+          <table className="mt-lg w-full border-collapse text-left text-[13px]">
+            <thead>
+              <tr className="border-y-2 border-black text-[11px] uppercase tracking-wide">
+                <th className="py-[6px] font-semibold">Description</th>
+                <th className="py-[6px] text-right font-semibold">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items ? items.map((it) => (
+                <tr key={it.id} className="border-b border-black/25"><td className="py-[6px]">{it.label}</td><td className="py-[6px] text-right font-mono-data">{rs(it.amount)}</td></tr>
+              )) : (
+                <tr className="border-b border-black/25"><td className="py-[6px]">{voucher.description || "Fee"}</td><td className="py-[6px] text-right font-mono-data">{rs(voucher.amount)}</td></tr>
+              )}
+              <tr className="border-b border-black/25"><td className="py-[6px]">Total Billed</td><td className="py-[6px] text-right font-mono-data">{rs(voucher.amount)}</td></tr>
+              {voucher.paidAmount > 0 && (
+                <tr className="border-b border-black/25"><td className="py-[6px]">Less: Already Paid</td><td className="py-[6px] text-right font-mono-data">− {rs(voucher.paidAmount)}</td></tr>
+              )}
+            </tbody>
+          </table>
+
+          {/* amount payable */}
+          <div className="mt-sm flex items-center justify-between border-2 border-black px-md py-sm">
+            <span className="text-[13px] font-bold uppercase tracking-wide">Amount Payable</span>
+            <span className="font-mono-data text-[20px] font-bold">{rs(remaining > 0 ? remaining : 0)}</span>
+          </div>
+
+          <p className="mt-lg text-[12px] italic">{profile?.voucherFooter || "Please pay before the due date to avoid a late fee."}</p>
+          <div className="mt-xl grid grid-cols-2 gap-xl">
+            <div className="border-t border-black pt-xs text-center text-[11px] uppercase tracking-wide">Accounts Signature</div>
+            <div className="border-t border-black pt-xs text-center text-[11px] uppercase tracking-wide">Received By / Bank Stamp</div>
+          </div>
         </div>
       </div>
     </div>
@@ -598,22 +596,22 @@ function ReceiptWindow({ voucher, payment, profile, onClose }: { voucher: Vouche
           {/* header */}
           <div className="border-b-2 border-black pb-md text-center">
             <p className="text-[18px] font-bold">{name}</p>
-            {line2 ? <p className="text-[12px] text-neutral-600">{line2}</p> : null}
-            {profile?.phone ? <p className="text-[12px] text-neutral-600">Tel: {profile.phone}</p> : null}
+            {line2 ? <p className="text-[12px] text-black">{line2}</p> : null}
+            {profile?.phone ? <p className="text-[12px] text-black">Tel: {profile.phone}</p> : null}
             <p className="mt-sm text-[13px] font-semibold uppercase tracking-[0.2em]">Payment Receipt</p>
           </div>
 
-          <div className="mt-md flex justify-between text-[12px] text-neutral-600">
+          <div className="mt-md flex justify-between text-[12px] text-black">
             <span>Receipt #: <span className="font-mono-data text-black">RCT-{String(payment.id).padStart(5, "0")}</span></span>
             <span>Date: <span className="text-black">{fmtDate(payment.paidAt)}</span></span>
           </div>
 
           <div className="mt-md space-y-[7px]">
-            <div className="flex justify-between"><span className="text-[13px] text-neutral-600">Voucher</span><span className="font-mono-data text-[13px] text-black">{voucher.voucherNo}</span></div>
-            <div className="flex justify-between"><span className="text-[13px] text-neutral-600">Student</span><span className="text-[13px] font-medium text-black">{voucher.studentName} ({voucher.studentRegistryId})</span></div>
-            <div className="flex justify-between"><span className="text-[13px] text-neutral-600">Payment Method</span><span className="text-[13px] text-black">{payment.method || "—"}</span></div>
-            {payment.reference && <div className="flex justify-between"><span className="text-[13px] text-neutral-600">Reference</span><span className="font-mono-data text-[13px] text-black">{payment.reference}</span></div>}
-            <div className="flex justify-between"><span className="text-[13px] text-neutral-600">Received By (Accounts)</span><span className="text-[13px] font-semibold text-black">{payment.receivedBy || "—"}</span></div>
+            <div className="flex justify-between"><span className="text-[13px] text-black">Voucher</span><span className="font-mono-data text-[13px] text-black">{voucher.voucherNo}</span></div>
+            <div className="flex justify-between"><span className="text-[13px] text-black">Student</span><span className="text-[13px] font-medium text-black">{voucher.studentName} ({voucher.studentRegistryId})</span></div>
+            <div className="flex justify-between"><span className="text-[13px] text-black">Payment Method</span><span className="text-[13px] text-black">{payment.method || "—"}</span></div>
+            {payment.reference && <div className="flex justify-between"><span className="text-[13px] text-black">Reference</span><span className="font-mono-data text-[13px] text-black">{payment.reference}</span></div>}
+            <div className="flex justify-between"><span className="text-[13px] text-black">Received By (Accounts)</span><span className="text-[13px] font-semibold text-black">{payment.receivedBy || "—"}</span></div>
           </div>
 
           <div className="mt-md flex justify-between border-y-2 border-black py-sm">
@@ -621,14 +619,14 @@ function ReceiptWindow({ voucher, payment, profile, onClose }: { voucher: Vouche
             <span className="font-mono-data text-[16px] font-bold text-black">{rs(payment.amount)}</span>
           </div>
 
-          <div className="mt-sm flex justify-between text-[12px] text-neutral-600">
+          <div className="mt-sm flex justify-between text-[12px] text-black">
             <span>Paid: {rs(voucher.paidAmount)} / {rs(voucher.amount)}</span>
             <span>Balance: {rs(balance)}{settled ? " (paid in full)" : ""}</span>
           </div>
 
           <div className="my-md border-t border-dashed border-neutral-400" />
-          <p className="text-center text-[12px] text-neutral-600">Thank you for your payment.</p>
-          <div className="mx-auto mt-lg w-1/2 border-t border-black pt-xs text-center text-[11px] text-neutral-600">Authorised Signature</div>
+          <p className="text-center text-[12px] text-black">Thank you for your payment.</p>
+          <div className="mx-auto mt-lg w-1/2 border-t border-black pt-xs text-center text-[11px] text-black">Authorised Signature</div>
         </div>
       </div>
     </div>
