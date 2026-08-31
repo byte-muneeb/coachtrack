@@ -51,9 +51,46 @@ export function setUser(u: AppUser | null) {
   if (u) window.localStorage.setItem(USER_KEY, JSON.stringify(u));
   else window.localStorage.removeItem(USER_KEY);
 }
+// --- Impersonation: stash the super-admin session so they can return ---
+const SUPER_TOKEN_KEY = "ct_super_token";
+const SUPER_USER_KEY = "ct_super_user";
+
+// Called by the super-admin console when entering an institute: saves the
+// current (super-admin) token+user, then activates the impersonation session.
+export function beginImpersonation(newToken: string, newUser: AppUser) {
+  if (typeof window === "undefined") return;
+  const t = getToken();
+  const u = getUser();
+  if (t) window.localStorage.setItem(SUPER_TOKEN_KEY, t);
+  if (u) window.localStorage.setItem(SUPER_USER_KEY, JSON.stringify(u));
+  setToken(newToken);
+  setUser(newUser);
+}
+
+export function isImpersonating(): boolean {
+  return typeof window !== "undefined" && !!window.localStorage.getItem(SUPER_TOKEN_KEY) && !!getUser()?.impersonatorId;
+}
+
+// Restore the stashed super-admin session. Returns false if nothing to restore.
+export function exitImpersonation(): boolean {
+  if (typeof window === "undefined") return false;
+  const t = window.localStorage.getItem(SUPER_TOKEN_KEY);
+  const uRaw = window.localStorage.getItem(SUPER_USER_KEY);
+  if (!t || !uRaw) return false;
+  try { setUser(JSON.parse(uRaw) as AppUser); } catch { return false; }
+  setToken(t);
+  window.localStorage.removeItem(SUPER_TOKEN_KEY);
+  window.localStorage.removeItem(SUPER_USER_KEY);
+  return true;
+}
+
 export function signOut() {
   setToken(null); setUser(null);
-  if (typeof window !== "undefined") window.location.href = "/login";
+  if (typeof window !== "undefined") {
+    window.localStorage.removeItem(SUPER_TOKEN_KEY);
+    window.localStorage.removeItem(SUPER_USER_KEY);
+    window.location.href = "/login";
+  }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

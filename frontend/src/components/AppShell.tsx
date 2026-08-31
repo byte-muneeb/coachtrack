@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { NAV } from "@/lib/nav";
-import { statsApi, setToken } from "@/lib/api";
+import { statsApi, setToken, exitImpersonation } from "@/lib/api";
 
 // Nav items only an entity_admin sees (institution-wide config/management).
 const ENTITY_ADMIN_ONLY = new Set(["/settings", "/users", "/audit", "/reminders", "/branches"]);
@@ -65,8 +65,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   function signOut() {
     setToken(null);
-    try { window.localStorage.removeItem("ct_user"); } catch { /* ignore */ }
+    try {
+      window.localStorage.removeItem("ct_user");
+      window.localStorage.removeItem("ct_super_token");
+      window.localStorage.removeItem("ct_super_user");
+    } catch { /* ignore */ }
     window.location.href = "/login";
+  }
+
+  // Super admin: leave the impersonated institute and return to the platform console.
+  function exitImp() {
+    window.location.href = exitImpersonation() ? "/admin" : "/login";
   }
 
   const role = user?.role || "entity_admin";
@@ -179,13 +188,22 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* ---------- Topbar ---------- */}
       <header className="fixed right-0 top-0 z-40 flex h-16 w-[calc(100%-280px)] items-center justify-between border-b border-outline-variant bg-surface/85 px-margin-desktop backdrop-blur-md shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
-        <div className="min-w-0">
-          <p className="truncate font-body-md text-body-md font-semibold text-on-surface">
-            {impersonating ? "Super-admin view" : "Head Office"}
-          </p>
-          <p className="truncate font-label-md text-label-md text-on-surface-variant">
-            {impersonating ? "Impersonating this institute — actions are audited" : "Coaching Centre Management"}
-          </p>
+        <div className="flex min-w-0 items-center gap-md">
+          <div className="min-w-0">
+            <p className="truncate font-body-md text-body-md font-semibold text-on-surface">
+              {impersonating ? "Super-admin view" : "Head Office"}
+            </p>
+            <p className="truncate font-label-md text-label-md text-on-surface-variant">
+              {impersonating ? "Impersonating this institute — actions are audited" : "Coaching Centre Management"}
+            </p>
+          </div>
+          {impersonating && (
+            <button onClick={exitImp}
+              className="flex shrink-0 items-center gap-xs rounded-lg bg-amber-500 px-md py-[7px] font-label-md text-label-md font-semibold text-black hover:bg-amber-400">
+              <span className="material-symbols-outlined text-[18px]">logout</span>
+              Exit to Platform
+            </button>
+          )}
         </div>
 
         <div ref={barRef} className="relative flex items-center gap-xs">

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { entitiesApi, getUser, setToken, setUser, signOut, type Entity, type AppUser } from "@/lib/api";
+import { entitiesApi, getUser, beginImpersonation, signOut, type Entity, type AppUser } from "@/lib/api";
 
 function initials(name: string) {
   return (name || "?").split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("");
@@ -74,8 +74,7 @@ export default function SuperAdminPage() {
     setError(null);
     try {
       const { token } = await entitiesApi.impersonate(ent.id);
-      setToken(token);
-      setUser({
+      beginImpersonation(token, {
         id: me?.id ?? 0, username: me?.username ?? "superadmin", fullName: me?.fullName ?? null,
         role: "entity_admin", entityId: ent.id, impersonatorId: me?.id, allBranches: true, branchIds: [],
       });
