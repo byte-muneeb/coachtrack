@@ -4,8 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
-  studentsApi, enrollmentsApi, coursesApi, vouchersApi,
-  type Student, type Enrollment, type Transfer, type Course, type Batch,
+  studentsApi, enrollmentsApi, coursesApi, vouchersApi, testsApi,
+  type Student, type Enrollment, type Transfer, type Course, type Batch, type StudentTestResult,
 } from "@/lib/api";
 import StatCard from "@/components/StatCard";
 import { Select, numberGuard, noWheel } from "@/components/form";
@@ -32,6 +32,7 @@ export default function StudentProfilePage() {
   const [student, setStudent] = useState<Student | null>(null);
   const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [testResults, setTestResults] = useState<StudentTestResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -52,15 +53,17 @@ export default function StudentProfilePage() {
     setLoading(true);
     setError(null);
     try {
-      const [s, en, tr] = await Promise.all([
+      const [s, en, tr, res] = await Promise.all([
         studentsApi.get(id),
         enrollmentsApi.list(Number(id)),
         enrollmentsApi.transfers(Number(id)),
+        testsApi.studentResults(Number(id)).catch(() => []),
       ]);
       setStudent(s);
       setDraft(s);
       setEnrollments(en);
       setTransfers(tr);
+      setTestResults(res);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
     } finally {
@@ -276,6 +279,38 @@ export default function StudentProfilePage() {
             </div>
           )}
         </section>
+
+        {/* Test results */}
+        {testResults.length > 0 && (
+          <section className="rounded-xl border border-outline-variant bg-surface-container-lowest p-lg">
+            <h2 className="mb-md font-headline-md text-headline-md font-semibold text-primary">Test Results</h2>
+            <div className="overflow-x-auto rounded-lg border border-outline-variant">
+              <table className="w-full text-left">
+                <thead className="bg-surface-container-low font-label-md text-label-md uppercase text-on-surface-variant">
+                  <tr>
+                    <th className="px-md py-sm">Test</th><th className="px-md py-sm">Course</th><th className="px-md py-sm">Date</th>
+                    <th className="px-md py-sm text-right">Marks</th><th className="px-md py-sm text-right">%</th><th className="px-md py-sm text-center">Result</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-outline-variant">
+                  {testResults.map((t) => (
+                    <tr key={t.testId} className="hover:bg-secondary/5">
+                      <td className="px-md py-sm font-body-md text-body-md font-medium">{t.name}</td>
+                      <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{t.courseName || "—"}</td>
+                      <td className="px-md py-sm font-body-md text-body-md">{t.testDate ? fmtDate(t.testDate) : "—"}</td>
+                      <td className="px-md py-sm text-right font-mono-data text-mono-data">{t.absent ? "—" : `${t.obtainedMarks}/${t.totalMarks}`}</td>
+                      <td className="px-md py-sm text-right font-mono-data text-mono-data text-on-surface-variant">{t.percentage != null ? `${t.percentage}%` : "—"}</td>
+                      <td className="px-md py-sm text-center">
+                        {t.absent ? <span className="rounded-md bg-surface-container px-sm py-[2px] font-label-md text-label-md text-on-surface-variant">Absent</span>
+                          : <span className={`rounded-md px-sm py-[2px] font-label-md text-label-md font-semibold ${t.passed ? "bg-emerald-50 text-emerald-700" : "bg-error-container text-on-error-container"}`}>{t.passed ? "Pass" : "Fail"}</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
 
         {/* Details / edit form */}
         <section className="rounded-xl border border-outline-variant bg-surface-container-lowest p-lg">

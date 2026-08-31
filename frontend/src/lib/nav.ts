@@ -40,6 +40,7 @@ export const NAV: NavGroup[] = [
     items: [
       { label: "Courses", href: "/courses", icon: "school" },
       { label: "Attendance", href: "/attendance", icon: "fact_check" },
+      { label: "Tests & Results", href: "/tests", icon: "quiz" },
     ],
   },
   {

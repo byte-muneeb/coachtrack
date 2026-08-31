@@ -73,6 +73,9 @@ const CAMEL = [
   "overdueCount", "overdueVouchers", "revenueMTD", "selectedMonth", "studentName", "studentPhone",
   "studentRegistryId", "studentsCount", "toBatchName", "totalCollected", "totalExpenses",
   "totalIncome", "totalOutstanding", "totalStudents",
+  // tests & results (B2)
+  "testId", "testDate", "totalMarks", "passingMarks", "maxMarks", "obtainedMarks",
+  "subjectId", "subjectCount", "resultCount",
 ];
 const KEY_MAP: Record<string, string> = {};
 for (const c of CAMEL) KEY_MAP[c.toLowerCase()] = c;
@@ -248,10 +251,10 @@ export async function ensureSchema(): Promise<void> {
   const pool = await getPool();
   const run = (q: string) => pool.request().query(q);
 
-  // Retired modules (Tests, Teacher Payroll): drop legacy tables.
-  // NOTE: Attendance is an ACTIVE table (created below) — it must NOT be dropped
-  // here, or every serverless cold start would erase all attendance data.
-  await run(`DROP TABLE IF EXISTS TestResults, Tests, Teachers CASCADE;`);
+  // Retired module (Teacher Payroll): drop legacy table.
+  // NOTE: Attendance, Tests and TestResults are ACTIVE tables (created below) —
+  // they must NOT be dropped here, or every serverless cold start would wipe data.
+  await run(`DROP TABLE IF EXISTS Teachers CASCADE;`);
 
   // --- Tenancy backbone ---
   await run(`
@@ -583,6 +586,73 @@ export async function ensureSchema(): Promise<void> {
       createdAt      TIMESTAMPTZ NOT NULL DEFAULT now()
     );`);
 
+  // --- Tests & Results (B2) ---
+  // A test optionally defines subjects; with subjects, marks are entered per
+  // subject and summed into TestResults.obtainedMarks; without subjects a single
+  // total is entered. Ranking always uses TestResults.obtainedMarks.
+  await run(`
+    CREATE TABLE IF NOT EXISTS Tests (
+      id           INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId     INT NOT NULL,
+      branchId     INT NOT NULL,
+      courseId     INT NOT NULL,
+      batchId      INT,
+      name         TEXT NOT NULL,
+      testDate     DATE,
+      totalMarks   DOUBLE PRECISION NOT NULL DEFAULT 0,
+      passingMarks DOUBLE PRECISION NOT NULL DEFAULT 0,
+      status       TEXT NOT NULL DEFAULT 'active',
+      createdAt    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updatedAt    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT FK_Tests_Courses  FOREIGN KEY (courseId) REFERENCES Courses(id)  ON DELETE CASCADE,
+      CONSTRAINT FK_Tests_Batches  FOREIGN KEY (batchId)  REFERENCES Batches(id)  ON DELETE SET NULL,
+      CONSTRAINT FK_Tests_Entities FOREIGN KEY (entityId) REFERENCES Entities(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Tests_Branches FOREIGN KEY (branchId) REFERENCES Branches(id) ON DELETE CASCADE
+    );`);
+  await run(`
+    CREATE TABLE IF NOT EXISTS TestSubjects (
+      id        INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId  INT NOT NULL,
+      testId    INT NOT NULL,
+      name      TEXT NOT NULL,
+      maxMarks  DOUBLE PRECISION NOT NULL DEFAULT 0,
+      position  INT NOT NULL DEFAULT 0,
+      CONSTRAINT FK_TestSubjects_Tests    FOREIGN KEY (testId)   REFERENCES Tests(id)    ON DELETE CASCADE,
+      CONSTRAINT FK_TestSubjects_Entities FOREIGN KEY (entityId) REFERENCES Entities(id) ON DELETE CASCADE
+    );`);
+  await run(`
+    CREATE TABLE IF NOT EXISTS TestResults (
+      id            INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId      INT NOT NULL,
+      branchId      INT NOT NULL,
+      testId        INT NOT NULL,
+      studentId     INT NOT NULL,
+      obtainedMarks DOUBLE PRECISION NOT NULL DEFAULT 0,
+      absent        SMALLINT NOT NULL DEFAULT 0,
+      remarks       TEXT,
+      markedBy      INT,
+      createdAt     TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updatedAt     TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT UQ_TestResults UNIQUE (testId, studentId),
+      CONSTRAINT FK_TestResults_Tests    FOREIGN KEY (testId)    REFERENCES Tests(id)    ON DELETE CASCADE,
+      CONSTRAINT FK_TestResults_Students FOREIGN KEY (studentId) REFERENCES Students(id)  ON DELETE CASCADE,
+      CONSTRAINT FK_TestResults_Entities FOREIGN KEY (entityId)  REFERENCES Entities(id)  ON DELETE CASCADE,
+      CONSTRAINT FK_TestResults_Branches FOREIGN KEY (branchId)  REFERENCES Branches(id)  ON DELETE CASCADE
+    );`);
+  await run(`
+    CREATE TABLE IF NOT EXISTS TestResultMarks (
+      id            INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId      INT NOT NULL,
+      testId        INT NOT NULL,
+      studentId     INT NOT NULL,
+      subjectId     INT NOT NULL,
+      obtainedMarks DOUBLE PRECISION NOT NULL DEFAULT 0,
+      CONSTRAINT UQ_TestResultMarks UNIQUE (testId, studentId, subjectId),
+      CONSTRAINT FK_TRM_Subjects FOREIGN KEY (subjectId) REFERENCES TestSubjects(id) ON DELETE CASCADE,
+      CONSTRAINT FK_TRM_Tests    FOREIGN KEY (testId)    REFERENCES Tests(id)        ON DELETE CASCADE,
+      CONSTRAINT FK_TRM_Entities FOREIGN KEY (entityId)  REFERENCES Entities(id)     ON DELETE CASCADE
+    );`);
+
   // Atomic per-entity, per-year sequence backing human-readable IDs
   // (registry numbers, voucher numbers). One row per (entity, kind, year); the
   // number is handed out via a single upsert so concurrent requests can't collide.
@@ -608,6 +678,10 @@ export async function ensureSchema(): Promise<void> {
   await run(`CREATE INDEX IF NOT EXISTS idx_expenses_eb    ON Expenses(entityId, branchId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_inquiries_eb   ON Inquiries(entityId, branchId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_attendance_ebd ON Attendance(entityId, branchId, date);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_tests_ebc       ON Tests(entityId, branchId, courseId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_testresults_t   ON TestResults(testId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_testresults_s   ON TestResults(studentId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_trm_ts          ON TestResultMarks(testId, studentId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_branches_e     ON Branches(entityId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_users_e        ON Users(entityId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_audit_e        ON AuditLog(entityId);`);

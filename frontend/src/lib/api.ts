@@ -555,6 +555,56 @@ export const attendanceApi = {
   },
 };
 
+// ---- Tests & Results (B2) ----
+export type TestSubject = { id: number; name: string; maxMarks: number; position: number };
+export type Test = {
+  id: number; entityId: number; branchId: number; courseId: number; batchId: number | null;
+  name: string; testDate: string | null; totalMarks: number; passingMarks: number; status: string;
+  courseName?: string | null; batchName?: string | null; batchTimeSlot?: string | null;
+  subjectCount?: number; resultCount?: number; subjects?: TestSubject[];
+  createdAt?: string; updatedAt?: string;
+};
+export type TestRosterSubject = { subjectId: number; name: string; maxMarks: number; obtainedMarks: number | null };
+export type TestRosterRow = {
+  studentId: number; studentName: string; registryId: string; branchId: number;
+  recorded: boolean; absent: boolean; obtainedMarks: number | null;
+  percentage: number | null; passed: boolean | null; rank: number | null;
+  remarks: string | null; subjects: TestRosterSubject[];
+};
+export type StudentTestResult = {
+  testId: number; name: string; testDate: string | null; totalMarks: number; passingMarks: number;
+  courseName: string | null; obtainedMarks: number; absent: boolean; remarks: string | null;
+  percentage: number | null; passed: boolean | null;
+};
+export type TestMarkInput = {
+  studentId: number; absent?: boolean; remarks?: string; total?: number;
+  subjects?: { subjectId: number; marks: number }[];
+};
+export type TestInput = Omit<Partial<Test>, "subjects"> & { subjects?: { name: string; maxMarks: number }[] };
+
+export const testsApi = {
+  list: (params: { courseId?: number; batchId?: number; search?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.courseId) q.set("courseId", String(params.courseId));
+    if (params.batchId) q.set("batchId", String(params.batchId));
+    if (params.search) q.set("search", params.search);
+    const qs = q.toString();
+    return request<Test[]>(`/api/tests${qs ? `?${qs}` : ""}`);
+  },
+  get: (id: number) => request<Test>(`/api/tests/${id}`),
+  create: (data: TestInput) =>
+    request<Test>("/api/tests", { method: "POST", body: JSON.stringify(data) }),
+  update: (id: number, data: TestInput) =>
+    request<Test>(`/api/tests/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  remove: (id: number) => request<void>(`/api/tests/${id}`, { method: "DELETE" }),
+  results: (id: number) => request<{ test: Test; roster: TestRosterRow[] }>(`/api/tests/${id}/results`),
+  saveResults: (id: number, marks: TestMarkInput[]) =>
+    request<{ saved: number }>(`/api/tests/${id}/results`, { method: "POST", body: JSON.stringify({ marks }) }),
+  studentResults: (studentId: number) => request<StudentTestResult[]>(`/api/tests/student/${studentId}`),
+  importRows: (id: number, data: { rows: ImportRow[]; validateOnly?: boolean }) =>
+    request<ImportResult>(`/api/tests/${id}/import`, { method: "POST", body: JSON.stringify(data) }),
+};
+
 // ---- Super-admin (platform) : entity management ----
 export type Entity = {
   id: number; name: string; slug: string; status: string;
