@@ -1,12 +1,78 @@
 import { Router } from "express";
 import { getPool, sql } from "../db";
 import { requireRole, type AuthedRequest } from "../auth";
-import { scope } from "../tenant";
+import { scope, resolveWriteBranch } from "../tenant";
+import { MAX_IMPORT_ROWS, rowGetter, lc, trimStr, toNum, type ImportResult } from "../importUtils";
 
 const router = Router();
 
 // entity_admin + branch_manager may create/edit courses & batches; others view.
 const canWrite = requireRole("entity_admin", "branch_manager");
+
+// POST /api/courses/import — bulk create courses from parsed CSV/XLSX rows.
+// Case-insensitive dedupe (vs existing courses and within the file). Pass
+// validateOnly:true for a dry-run preview.
+router.post("/import", canWrite, async (req, res, next) => {
+  try {
+    const ctx = (req as AuthedRequest).ctx!;
+    const rows: Record<string, unknown>[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const validateOnly = !!req.body?.validateOnly;
+    if (!rows.length) return res.status(400).json({ error: "No rows to import" });
+    if (rows.length > MAX_IMPORT_ROWS) return res.status(400).json({ error: `Max ${MAX_IMPORT_ROWS} rows per import; split the file.` });
+
+    const pool = await getPool();
+    const defaultBranch = resolveWriteBranch(ctx, req.body?.branchId != null ? Number(req.body.branchId) : null);
+    if (defaultBranch == null) return res.status(400).json({ error: "Select a target branch for the import" });
+
+    // Existing course names (this entity) for case-insensitive dedupe.
+    const ex = await pool.request().input("ent", sql.Int, ctx.entityId).query("SELECT name FROM dbo.Courses WHERE entityId=@ent");
+    const existing = new Set<string>(ex.recordset.map((r: { name: string }) => lc(r.name)));
+
+    // Branches in scope, for optional per-row `branch` override (by name).
+    const bs = scope(ctx, { branchCol: "id" });
+    const brRes = await bs.apply(pool.request()).query(`SELECT id, name FROM dbo.Branches WHERE 1=1 ${bs.clause}`);
+    const branchMap = new Map<string, number>(brRes.recordset.map((b: { id: number; name: string }) => [lc(b.name), b.id]));
+
+    const result: ImportResult = { validateOnly, total: rows.length, created: 0, skipped: [], errors: [] };
+    const seen = new Set<string>();
+
+    for (let i = 0; i < rows.length; i++) {
+      const g = rowGetter(rows[i]);
+      const rn = i + 2; // header is row 1
+      const name = trimStr(g("name", "course", "coursename", "coursetitle"));
+      if (!name) { result.errors.push({ row: rn, reason: "Missing course name" }); continue; }
+      const key = lc(name);
+      if (existing.has(key) || seen.has(key)) { result.skipped.push({ row: rn, reason: `Course "${name}" already exists` }); continue; }
+
+      let branchId = defaultBranch;
+      const brName = trimStr(g("branch", "branchname", "campus"));
+      if (brName) {
+        const bid = branchMap.get(lc(brName));
+        if (!bid) { result.errors.push({ row: rn, reason: `Branch "${brName}" not found` }); continue; }
+        branchId = bid;
+      }
+
+      seen.add(key);
+      if (!validateOnly) {
+        const durRaw = g("durationmonths", "duration", "months");
+        await pool.request()
+          .input("ent", sql.Int, ctx.entityId).input("branch", sql.Int, branchId)
+          .input("name", sql.NVarChar, name)
+          .input("code", sql.NVarChar, trimStr(g("code")))
+          .input("level", sql.NVarChar, trimStr(g("level")))
+          .input("dur", sql.Int, durRaw != null ? Math.round(toNum(durRaw)) : null)
+          .input("desc", sql.NVarChar, trimStr(g("description", "desc")))
+          .input("adm", sql.Float, toNum(g("admissionfee", "admission")))
+          .input("mon", sql.Float, toNum(g("monthlyfee", "monthly")))
+          .input("exam", sql.Float, toNum(g("examfee", "exam")))
+          .query(`INSERT INTO dbo.Courses (entityId, branchId, name, code, level, durationMonths, description, admissionFee, monthlyFee, examFee, status)
+                  VALUES (@ent,@branch,@name,@code,@level,@dur,@desc,@adm,@mon,@exam,'active')`);
+      }
+      result.created += 1;
+    }
+    res.json(result);
+  } catch (e) { next(e); }
+});
 
 function num(v: unknown, fallback = 0): number {
   const n = Number(v);
@@ -75,10 +141,8 @@ router.post("/", canWrite, async (req, res, next) => {
     const b = req.body || {};
     if (!b.name || !String(b.name).trim())
       return res.status(400).json({ error: "Course name is required" });
-    // A course belongs to a branch. Branch users default to their first branch;
-    // entity_admin must pass branchId.
-    const requested = b.branchId != null ? Number(b.branchId) : null;
-    const branchId = ctx.allBranches ? requested : (requested != null && ctx.branchIds.includes(requested) ? requested : ctx.branchIds[0] ?? null);
+    // A course belongs to a branch, validated against the caller's entity scope.
+    const branchId = resolveWriteBranch(ctx, b.branchId != null ? Number(b.branchId) : null);
     if (branchId == null) return res.status(400).json({ error: "A valid branch is required" });
     const result = await pool.request()
       .input("ent", sql.Int, ctx.entityId)

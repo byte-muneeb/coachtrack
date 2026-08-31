@@ -19,8 +19,16 @@ export async function tenantContext(req: AuthedRequest, res: Response, next: Nex
     let allBranches = false;
 
     if (ENTITY_ADMIN_ROLES.has(u.role)) {
-      // entity_admin (and an impersonating super_admin) see every branch of the entity.
+      // entity_admin (and an impersonating super_admin) see every branch of the
+      // entity. allBranches skips read-filtering; branchIds still holds the entity's
+      // branches so writes can validate a requested branch belongs to this entity.
       allBranches = true;
+      if (u.entityId != null) {
+        const pool = await getPool();
+        const r = await pool.request().input("ent", sql.Int, u.entityId)
+          .query("SELECT id FROM Branches WHERE entityId=@ent");
+        branchIds = r.recordset.map((x: { id: number }) => x.id);
+      }
     } else if (u.entityId != null) {
       // Branch-scoped role: load the user's assigned branch set.
       const pool = await getPool();
@@ -91,10 +99,12 @@ export function scope(ctx: TenantCtx | undefined, opts?: { branchCol?: string; e
 // or a caller-provided branchId that must be validated against their scope.
 export function resolveWriteBranch(ctx: TenantCtx | undefined, requested?: number | null): number | null {
   if (!ctx) return null;
+  // A requested branch must belong to the caller's scope — for entity_admins that
+  // is the entity's full branch set (loaded into branchIds), so a foreign branch
+  // id (another tenant's branch) is rejected here.
   if (requested != null) {
-    if (ctx.allBranches || ctx.branchIds.includes(requested)) return requested;
-    return null; // requested a branch outside the user's scope → caller should 403
+    return ctx.branchIds.includes(requested) ? requested : null;
   }
   if (ctx.branchIds.length) return ctx.branchIds[0];
-  return null; // entity_admin must specify a branch explicitly
+  return null;
 }

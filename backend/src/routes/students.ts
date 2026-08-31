@@ -3,9 +3,121 @@ import { getPool, sql, type SqlPool } from "../db";
 import { logAudit } from "../audit";
 import { requireRole, type AuthedRequest } from "../auth";
 import { scope, resolveWriteBranch } from "../tenant";
+import { MAX_IMPORT_ROWS, rowGetter, lc, trimStr, toNum, toDateStr, type ImportResult } from "../importUtils";
 
 const router = Router();
 const canWrite = requireRole("entity_admin", "branch_manager", "front_desk");
+
+// POST /api/students/import — bulk create students from parsed CSV/XLSX rows.
+// Course is matched case-insensitively to an EXISTING course (else the row
+// errors). Duplicates (registryId or phone already present) are skipped.
+// registryId is auto-generated per entity when blank. validateOnly = dry run.
+router.post("/import", canWrite, async (req, res, next) => {
+  try {
+    const ctx = (req as AuthedRequest).ctx!;
+    const rows: Record<string, unknown>[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const validateOnly = !!req.body?.validateOnly;
+    if (!rows.length) return res.status(400).json({ error: "No rows to import" });
+    if (rows.length > MAX_IMPORT_ROWS) return res.status(400).json({ error: `Max ${MAX_IMPORT_ROWS} rows per import; split the file.` });
+
+    const pool = await getPool();
+    const defaultBranch = resolveWriteBranch(ctx, req.body?.branchId != null ? Number(req.body.branchId) : null);
+    if (defaultBranch == null) return res.status(400).json({ error: "Select a target branch for the import" });
+
+    // Existing courses (entity) → case-insensitive name match to canonical name.
+    const cRes = await pool.request().input("ent", sql.Int, ctx.entityId).query("SELECT name FROM dbo.Courses WHERE entityId=@ent");
+    const courseMap = new Map<string, string>(cRes.recordset.map((c: { name: string }) => [lc(c.name), c.name]));
+
+    // Existing students (entity) for duplicate detection.
+    const sRes = await pool.request().input("ent", sql.Int, ctx.entityId).query("SELECT registryId, phone FROM dbo.Students WHERE entityId=@ent");
+    const regSet = new Set<string>(sRes.recordset.map((s: { registryId: string }) => lc(s.registryId)));
+    const phoneSet = new Set<string>(sRes.recordset.filter((s: { phone: string | null }) => s.phone).map((s: { phone: string }) => lc(s.phone)));
+
+    // Branches in scope for optional per-row `branch` override.
+    const bs = scope(ctx, { branchCol: "id" });
+    const brRes = await bs.apply(pool.request()).query(`SELECT id, name FROM dbo.Branches WHERE 1=1 ${bs.clause}`);
+    const branchMap = new Map<string, number>(brRes.recordset.map((b: { id: number; name: string }) => [lc(b.name), b.id]));
+
+    // Registry auto-numbering seed (per entity, current year).
+    const year = new Date().getFullYear();
+    const mxRes = await pool.request().input("ent", sql.Int, ctx.entityId).input("prefix", sql.NVarChar, `CT-${year}-%`)
+      .query("SELECT COALESCE(MAX(CASE WHEN regexp_replace(registryId,'^.*-','') ~ '^[0-9]+$' THEN regexp_replace(registryId,'^.*-','')::int END),0) AS mx FROM Students WHERE entityId=@ent AND registryId LIKE @prefix");
+    let seq = mxRes.recordset[0].mx as number;
+
+    const result: ImportResult = { validateOnly, total: rows.length, created: 0, skipped: [], errors: [] };
+    const seenReg = new Set<string>();
+    const seenPhone = new Set<string>();
+
+    for (let i = 0; i < rows.length; i++) {
+      const g = rowGetter(rows[i]);
+      const rn = i + 2;
+      const fullName = trimStr(g("fullname", "name", "studentname"));
+      if (!fullName) { result.errors.push({ row: rn, reason: "Missing full name" }); continue; }
+
+      // Course: if provided, must match an existing course (case-insensitive).
+      let courseName: string | null = null;
+      const cCell = trimStr(g("course", "coursename"));
+      if (cCell) {
+        const canon = courseMap.get(lc(cCell));
+        if (!canon) { result.errors.push({ row: rn, reason: `Course "${cCell}" not found — upload courses first` }); continue; }
+        courseName = canon;
+      }
+
+      // Branch override by name.
+      let branchId = defaultBranch;
+      const brName = trimStr(g("branch", "campus"));
+      if (brName) {
+        const bid = branchMap.get(lc(brName));
+        if (!bid) { result.errors.push({ row: rn, reason: `Branch "${brName}" not found` }); continue; }
+        branchId = bid;
+      }
+
+      // Duplicate detection (phone).
+      const phone = trimStr(g("phone", "mobile", "contact", "phonenumber"));
+      if (phone && (phoneSet.has(lc(phone)) || seenPhone.has(lc(phone)))) {
+        result.skipped.push({ row: rn, reason: `Phone ${phone} already exists` }); continue;
+      }
+
+      // Registry id: provided (dedupe) or auto-generated.
+      let registryId = trimStr(g("registryid", "regno", "rollno", "roll", "registrationno"));
+      if (registryId) {
+        if (regSet.has(lc(registryId)) || seenReg.has(lc(registryId))) {
+          result.skipped.push({ row: rn, reason: `Registry ID ${registryId} already exists` }); continue;
+        }
+      } else {
+        seq += 1;
+        registryId = `CT-${year}-${String(seq).padStart(4, "0")}`;
+      }
+
+      seenReg.add(lc(registryId));
+      if (phone) seenPhone.add(lc(phone));
+
+      if (!validateOnly) {
+        await pool.request()
+          .input("ent", sql.Int, ctx.entityId).input("branch", sql.Int, branchId)
+          .input("rid", sql.NVarChar, registryId).input("name", sql.NVarChar, fullName)
+          .input("email", sql.NVarChar, trimStr(g("email")))
+          .input("phone", sql.NVarChar, phone)
+          .input("dob", sql.Date, toDateStr(g("dateofbirth", "dob")))
+          .input("addr", sql.NVarChar, trimStr(g("address")))
+          .input("gname", sql.NVarChar, trimStr(g("guardianname", "guardian", "parentname", "fathername")))
+          .input("grel", sql.NVarChar, trimStr(g("guardianrelation", "relation")))
+          .input("course", sql.NVarChar, courseName)
+          .input("batch", sql.NVarChar, trimStr(g("batch")))
+          .input("comm", sql.Date, toDateStr(g("commencementdate", "joindate", "admissiondate")))
+          .input("status", sql.NVarChar, trimStr(g("status")) || "active")
+          .input("disc", sql.Float, toNum(g("discountpct", "discount")))
+          .input("schol", sql.Float, toNum(g("scholarship")))
+          .input("notes", sql.NVarChar, trimStr(g("notes")))
+          .query(`INSERT INTO dbo.Students
+                    (entityId, branchId, registryId, fullName, email, phone, dateOfBirth, address, guardianName, guardianRelation, course, batch, commencementDate, status, discountPct, scholarship, notes)
+                  VALUES (@ent,@branch,@rid,@name,@email,@phone,@dob,@addr,@gname,@grel,@course,@batch,@comm,@status,@disc,@schol,@notes)`);
+      }
+      result.created += 1;
+    }
+    res.json(result);
+  } catch (e) { next(e); }
+});
 
 // Replace the stored `outstanding` with the derived voucher-ledger value.
 function withLiveOutstanding(row: Record<string, unknown>) {

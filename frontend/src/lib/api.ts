@@ -86,6 +86,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// Bulk import (CSV/XLSX parsed client-side into rows).
+export type ImportRow = Record<string, unknown>;
+export type ImportResult = {
+  validateOnly: boolean;
+  total: number;
+  created: number;
+  skipped: { row: number; reason: string }[];
+  errors: { row: number; reason: string }[];
+};
+
 export const studentsApi = {
   list: (params: { search?: string; status?: string; branch?: string } = {}) => {
     const q = new URLSearchParams();
@@ -102,6 +112,8 @@ export const studentsApi = {
     request<Student>(`/api/students/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   remove: (id: number) =>
     request<void>(`/api/students/${id}`, { method: "DELETE" }),
+  importRows: (data: { rows: ImportRow[]; branchId: number; validateOnly?: boolean }) =>
+    request<ImportResult>("/api/students/import", { method: "POST", body: JSON.stringify(data) }),
 };
 
 export type Batch = {
@@ -150,6 +162,8 @@ export const coursesApi = {
     request<Batch>(`/api/courses/${courseId}/batches/${batchId}`, { method: "PUT", body: JSON.stringify(data) }),
   removeBatch: (courseId: number, batchId: number) =>
     request<void>(`/api/courses/${courseId}/batches/${batchId}`, { method: "DELETE" }),
+  importRows: (data: { rows: ImportRow[]; branchId: number; validateOnly?: boolean }) =>
+    request<ImportResult>("/api/courses/import", { method: "POST", body: JSON.stringify(data) }),
 };
 
 export type FeeComponent = {

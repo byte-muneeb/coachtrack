@@ -22,6 +22,7 @@ export const NAV: NavGroup[] = [
     items: [
       { label: "Student Registry", href: "/students", icon: "group" },
       { label: "New Registration", href: "/students/register", icon: "person_add" },
+      { label: "Import Data", href: "/import", icon: "upload_file" },
       { label: "Inquiries", href: "/admissions", icon: "how_to_reg" },
     ],
   },
