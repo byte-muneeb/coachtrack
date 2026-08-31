@@ -518,6 +518,38 @@ export const auditApi = {
   list: () => request<AuditEntry[]>("/api/audit"),
 };
 
+// ---- Attendance ----
+export type AttendanceStatus = "present" | "absent" | "late" | "leave";
+export type RosterRow = {
+  studentId: number; studentName: string; registryId: string;
+  course: string | null; batch: string | null; branchId: number;
+  status: AttendanceStatus | null; note: string | null;
+};
+export type AttendanceSummary = {
+  presentCount: number; absentCount: number; lateCount: number; leaveCount: number;
+  totalMarked: number; attendancePct: number;
+};
+
+export const attendanceApi = {
+  roster: (params: { date?: string; branch?: string; search?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.date) q.set("date", params.date);
+    if (params.branch && params.branch !== "all") q.set("branch", params.branch);
+    if (params.search) q.set("search", params.search);
+    const qs = q.toString();
+    return request<{ date: string; roster: RosterRow[] }>(`/api/attendance/roster${qs ? `?${qs}` : ""}`);
+  },
+  mark: (data: { date: string; marks: { studentId: number; status: AttendanceStatus; note?: string }[] }) =>
+    request<{ saved: number; date: string }>("/api/attendance/mark", { method: "POST", body: JSON.stringify(data) }),
+  summary: (studentId: number, params: { from?: string; to?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.from) q.set("from", params.from);
+    if (params.to) q.set("to", params.to);
+    const qs = q.toString();
+    return request<AttendanceSummary>(`/api/attendance/summary/${studentId}${qs ? `?${qs}` : ""}`);
+  },
+};
+
 // ---- Super-admin (platform) : entity management ----
 export type Entity = {
   id: number; name: string; slug: string; status: string;

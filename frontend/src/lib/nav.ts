@@ -39,6 +39,7 @@ export const NAV: NavGroup[] = [
     heading: "Academics",
     items: [
       { label: "Courses", href: "/courses", icon: "school" },
+      { label: "Attendance", href: "/attendance", icon: "fact_check" },
     ],
   },
   {

@@ -65,6 +65,8 @@ const CAMEL = [
   // multi-tenant additions
   "contactPhone", "contactEmail", "isPrimary", "impersonatorId", "targetType", "targetId",
   "entityName", "branchName", "branchIds", "studentCount", "userCount",
+  // attendance
+  "markedBy", "presentCount", "absentCount", "lateCount", "leaveCount", "totalMarked", "attendancePct",
   // computed SELECT aliases
   "batchCount", "batchName", "batchStatus", "batchTimeSlot", "courseName", "discountTotal",
   "fromBatchName", "isOverdue", "newRegistrationsMTD", "outstandingLive", "outstandingStudentsCount",
@@ -519,6 +521,24 @@ export async function ensureSchema(): Promise<void> {
       CONSTRAINT FK_Inquiries_Branches FOREIGN KEY (branchId) REFERENCES Branches(id) ON DELETE CASCADE
     );`);
 
+  await run(`
+    CREATE TABLE IF NOT EXISTS Attendance (
+      id        INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entityId  INT NOT NULL,
+      branchId  INT NOT NULL,
+      studentId INT NOT NULL,
+      date      DATE NOT NULL,
+      status    TEXT NOT NULL DEFAULT 'present',   -- present | absent | late | leave
+      note      TEXT,
+      markedBy  INT,
+      createdAt TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updatedAt TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT FK_Attendance_Students FOREIGN KEY (studentId) REFERENCES Students(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Attendance_Entities FOREIGN KEY (entityId)  REFERENCES Entities(id) ON DELETE CASCADE,
+      CONSTRAINT FK_Attendance_Branches FOREIGN KEY (branchId)  REFERENCES Branches(id) ON DELETE CASCADE,
+      CONSTRAINT UQ_Attendance UNIQUE (studentId, date)
+    );`);
+
   // --- Entity-wide config (no branch dimension) ---
   await run(`
     CREATE TABLE IF NOT EXISTS ReminderRules (
@@ -571,6 +591,7 @@ export async function ensureSchema(): Promise<void> {
   await run(`CREATE INDEX IF NOT EXISTS idx_enrollments_eb ON Enrollments(entityId, branchId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_expenses_eb    ON Expenses(entityId, branchId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_inquiries_eb   ON Inquiries(entityId, branchId);`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_attendance_ebd ON Attendance(entityId, branchId, date);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_branches_e     ON Branches(entityId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_users_e        ON Users(entityId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_audit_e        ON AuditLog(entityId);`);
