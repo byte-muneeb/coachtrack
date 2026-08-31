@@ -2,7 +2,7 @@
   "name": "coachtrack-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "CoachTrack Pro API — coaching-center management (Pakistan). Express + Postgres (Supabase). mssql kept for Azure SQL fallback.",
+  "description": "CoachTrack Pro API — multi-tenant coaching/school management (Pakistan). Express + Postgres (Supabase).",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
@@ -13,16 +13,14 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "morgan": "^1.10.0",
-    "mssql": "^12.7.0",
     "pg": "^8.13.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/morgan": "^1.9.9",
-    "@types/mssql": "^12.3.0",
-    "@types/pg": "^8.11.10",
     "@types/node": "^22.5.0",
+    "@types/pg": "^8.11.10",
     "tsx": "^4.19.0",
     "typescript": "^5.6.2"
   }

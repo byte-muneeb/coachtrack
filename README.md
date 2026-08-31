@@ -1,59 +1,80 @@
 # CoachTrack Pro
 
-Coaching-center management app for the Pakistani market (fees, vouchers,
-attendance, tests, teacher payroll, parent communication). Design ported from
-the Stitch project; localized to PKR + local payment rails (JazzCash, Easypaisa,
-Raast, Bank Transfer/IBFT, Bank Challan).
+Multi-tenant management software for **Pakistani coaching centers and schools** — fees, vouchers & collections, students, courses/batches, admissions, expenses, and reporting. One deployment serves many institutes ("entities"), each with its own branches, users, and fully isolated data. Localized to **PKR** and local payment methods (JazzCash, Easypaisa, Raast, Bank Transfer/IBFT, Bank Challan, Cheque).
+
+## Stack
+
+| Layer | Tech | Hosting |
+|-------|------|---------|
+| Frontend | Next.js 16 (App Router) + TypeScript + Tailwind v4 | Vercel |
+| Backend | Express + TypeScript REST API | Vercel (serverless function) |
+| Database | PostgreSQL | Supabase |
+
+## What it does today
+
+- **Multi-tenant SaaS** — super-admin creates institutes (entities); each has branches, role-based users, and isolated data. Roles: `super_admin → entity_admin → {branch_manager, accountant, front_desk, teacher}` with per-branch scoping. Super-admin can impersonate an entity (audited).
+- **Students** — registry, profiles, per-entity registry IDs, live outstanding.
+- **Courses & Batches**, **Fee Components**, **Vouchers & Collections** (installments, late fees, exam-fee charge, transactional payments), **Enrollments & Transfers**.
+- **Admissions/Inquiries CRM**, **Expenses & Profit**, **Dashboard & Reports**, **Audit log**.
+- **CSV/XLSX bulk import** for courses and students (case-insensitive matching, dry-run preview, dedupe).
+- **Fee reminders** — rule + template engine and queue preview (⚠️ actual WhatsApp/SMS *sending* is not yet wired).
+
+See **[ROADMAP.md](ROADMAP.md)** for what's next (the full-academy-ERP plan) and **[REQUIREMENTS-GAP-ANALYSIS.md](REQUIREMENTS-GAP-ANALYSIS.md)** for the Pakistan market research behind it.
 
 ## Structure
 
 ```
 school/
-├─ frontend/   Next.js 16 (App Router) + TypeScript + Tailwind v4
+├─ frontend/   Next.js 16 App Router
 │  └─ src/
 │     ├─ app/
-│     │  ├─ layout.tsx           root layout (fonts + Material Symbols)
-│     │  ├─ globals.css          "Professional Coaching Ledger" design tokens
-│     │  ├─ page.tsx             redirects "/" -> "/dashboard"
-│     │  ├─ (app)/               desktop pages wrapped in the shared AppShell
-│     │  │  ├─ layout.tsx        renders <AppShell>
-│     │  │  ├─ dashboard/ students/ students/register/ students/profile/
-│     │  │  ├─ courses/ fees/ vouchers/ reminders/ reports/
-│     │  │  └─ attendance/ tests/ teachers/ branches/ expenses/
-│     │  ├─ parent/              parent mobile app (phone frame)
-│     │  └─ settings/            settings (mobile)
-│     ├─ components/AppShell.tsx sidebar (real nav) + topbar
-│     └─ lib/nav.ts              sidebar navigation config
+│     │  ├─ login/                 login (role-based redirect)
+│     │  ├─ admin/                 super-admin console (entities, impersonate)
+│     │  └─ (app)/                 entity app in the shared AppShell:
+│     │     dashboard/ students/ students/register/ import/ admissions/
+│     │     courses/ fees/ vouchers/ reminders/ expenses/ reports/
+│     │     branches/ users/ audit/ settings/
+│     ├─ components/AppShell.tsx   sidebar + topbar (role-gated nav)
+│     └─ lib/api.ts                typed API client + auth storage
+│                lib/nav.ts, lib/parseSpreadsheet.ts, lib/exportCsv.ts
 │
-└─ backend/    Express + TypeScript REST API (mock data; DB added next)
+└─ backend/    Express + TypeScript REST API
    └─ src/
-      ├─ server.ts               entry (PORT 4000)
-      ├─ app.ts                  express app, CORS, /health, /api
-      ├─ routes/index.ts         GET endpoints per module
-      └─ data/mock.ts            mock PKR data
+      ├─ server.ts / app.ts        entry + express app (CORS, /health, /api)
+      ├─ db.ts                     Postgres layer + tenant-aware schema
+      ├─ auth.ts                   token (entityId/role) + password hashing
+      ├─ tenant.ts                 tenant-context middleware + scope helpers
+      ├─ importUtils.ts            case-insensitive CSV/XLSX row helpers
+      ├─ audit.ts                  audit logging
+      └─ routes/                   students, courses, fees, vouchers, enrollments,
+                                   expenses, inquiries, reminders, settings,
+                                   branches, auth, audit, admin, internal, stats
 ```
 
-## Run
+## Run locally
+
+**Backend** (http://localhost:4000, health at `/health`)
+```bash
+cd backend
+npm install
+# copy .env.example -> .env and set DATABASE_URL (Supabase), AUTH_SECRET, CRON_SECRET
+npm run dev
+```
 
 **Frontend** (http://localhost:3000)
 ```bash
 cd frontend
-npm install      # first time
+npm install
+# .env.local: NEXT_PUBLIC_API_URL=http://localhost:4000
 npm run dev
 ```
 
-**Backend** (http://localhost:4000, health at /health)
+**Seed demo data** (drops + rebuilds the schema, creates a super admin + 2 demo institutes):
 ```bash
-cd backend
-npm install      # first time
-npm run dev
+cd backend && npx tsx src/seed.ts
 ```
+Demo logins (all password `admin123`): `superadmin`, `ali-admin`, `ali-accountant`, `bright-admin`, `bright-accountant`.
 
-## Notes
+## Deploy
 
-- Pages are faithful static renders of the approved designs. Interactivity and
-  live data are wired in the **database phase** (next step), which will replace
-  the backend's mock data and connect the frontend to `/api`.
-- `REQUIREMENTS-GAP-ANALYSIS.md` documents the market-fit gaps and roadmap.
-- Not yet built as screens: **Admissions & Inquiries CRM** (design generation
-  hit a network timeout before we pivoted to the app build).
+Two Vercel projects from this one repo — backend (Root Directory `backend`) and frontend (Root Directory `frontend`) — plus a Supabase database. Full step-by-step in **[DEPLOYMENT.md](DEPLOYMENT.md)**.
