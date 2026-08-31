@@ -33,16 +33,17 @@ router.get("/roster", async (req, res, next) => {
       request.input("search", sql.NVarChar, `%${search}%`);
       extra.push("(s.fullName LIKE @search OR s.registryId LIKE @search)");
     }
-    // Course / batch filters (case-insensitive; batch carries the time slot).
-    const course = String(req.query.course || "").trim();
-    if (course && course !== "all") {
-      request.input("course", sql.NVarChar, course);
-      extra.push("LOWER(s.course) = LOWER(@course)");
-    }
-    const batch = String(req.query.batch || "").trim();
-    if (batch && batch !== "all") {
-      request.input("batch", sql.NVarChar, batch);
-      extra.push("LOWER(s.batch) = LOWER(@batch)");
+    // Course / batch filters via the real student↔batch link (Enrollments).
+    // A batch filter takes precedence over a course filter. The batch carries
+    // the time slot (shown in the picker), giving course + batch + time filtering.
+    const batchId = Number(req.query.batchId);
+    const courseId = Number(req.query.courseId);
+    if (batchId && !isNaN(batchId)) {
+      request.input("batchId", sql.Int, batchId);
+      extra.push("EXISTS (SELECT 1 FROM dbo.Enrollments e WHERE e.studentId = s.id AND e.status='active' AND e.batchId = @batchId)");
+    } else if (courseId && !isNaN(courseId)) {
+      request.input("courseId", sql.Int, courseId);
+      extra.push("EXISTS (SELECT 1 FROM dbo.Enrollments e WHERE e.studentId = s.id AND e.status='active' AND e.courseId = @courseId)");
     }
     const extraClause = extra.length ? "AND " + extra.join(" AND ") : "";
     const r = await request.query(`

@@ -531,12 +531,12 @@ export type AttendanceSummary = {
 };
 
 export const attendanceApi = {
-  roster: (params: { date?: string; branch?: string; course?: string; batch?: string; search?: string } = {}) => {
+  roster: (params: { date?: string; branch?: string; courseId?: number; batchId?: number; search?: string } = {}) => {
     const q = new URLSearchParams();
     if (params.date) q.set("date", params.date);
     if (params.branch && params.branch !== "all") q.set("branch", params.branch);
-    if (params.course && params.course !== "all") q.set("course", params.course);
-    if (params.batch && params.batch !== "all") q.set("batch", params.batch);
+    if (params.courseId) q.set("courseId", String(params.courseId));
+    if (params.batchId) q.set("batchId", String(params.batchId));
     if (params.search) q.set("search", params.search);
     const qs = q.toString();
     return request<{ date: string; roster: RosterRow[] }>(`/api/attendance/roster${qs ? `?${qs}` : ""}`);

@@ -20,7 +20,7 @@ export default function AttendancePage() {
   const [date, setDate] = useState(today());
   const [branch, setBranch] = useState("all");
   const [courseId, setCourseId] = useState(0); // 0 = all
-  const [batchName, setBatchName] = useState("all");
+  const [batchId, setBatchId] = useState(0);   // 0 = all
   const [search, setSearch] = useState("");
 
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -41,24 +41,22 @@ export default function AttendancePage() {
 
   // When course changes, load its batches (each carries a time slot).
   useEffect(() => {
-    setBatchName("all");
+    setBatchId(0);
     if (!courseId) { setBatches([]); return; }
     coursesApi.get(courseId).then((c) => setBatches(c.batches ?? [])).catch(() => setBatches([]));
   }, [courseId]);
 
-  const courseName = useMemo(() => courses.find((c) => c.id === courseId)?.name, [courses, courseId]);
-
   const load = useCallback(async () => {
     setLoading(true); setError(null); setMsg(null);
     try {
-      const { roster } = await attendanceApi.roster({ date, branch, course: courseName, batch: batchName, search });
+      const { roster } = await attendanceApi.roster({ date, branch, courseId: courseId || undefined, batchId: batchId || undefined, search });
       setRoster(roster);
       const init: Record<number, AttendanceStatus> = {};
       for (const r of roster) if (r.status) init[r.studentId] = r.status;
       setMarks(init);
     } catch (e) { setError(e instanceof Error ? e.message : "Failed to load roster"); }
     finally { setLoading(false); }
-  }, [date, branch, courseName, batchName, search]);
+  }, [date, branch, courseId, batchId, search]);
   useEffect(() => { const t = setTimeout(load, search ? 300 : 0); return () => clearTimeout(t); }, [load, search]);
 
   const counts = useMemo(() => {
@@ -130,9 +128,9 @@ export default function AttendancePage() {
             <option value={0}>All courses</option>
             {courses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
-          <select value={batchName} onChange={(e) => setBatchName(e.target.value)} className={selCls} disabled={!courseId} title="Batch (time slot)">
-            <option value="all">{courseId ? "All batches" : "Batch — pick a course"}</option>
-            {batches.map((b) => <option key={b.id} value={b.name}>{b.name}{b.timeSlot ? ` — ${b.timeSlot}` : ""}</option>)}
+          <select value={batchId} onChange={(e) => setBatchId(Number(e.target.value))} className={selCls} disabled={!courseId} title="Batch (time slot)">
+            <option value={0}>{courseId ? "All batches" : "Batch — pick a course"}</option>
+            {batches.map((b) => <option key={b.id} value={b.id}>{b.name}{b.timeSlot ? ` — ${b.timeSlot}` : ""}</option>)}
           </select>
           <label className="flex flex-1 items-center gap-xs rounded-lg border border-outline-variant bg-surface px-md py-sm">
             <span className="material-symbols-outlined text-[18px] text-on-surface-variant">search</span>
