@@ -32,8 +32,8 @@ The app works but the UI needs structure/polish. Starting with the **super-admin
 - *(Later, paid) A3. Online payment gateway (JazzCash/Easypaisa/Raast/KuickPay) with auto-reconciliation.*
 
 ### Phase B — Academic core (re-add what the market expects)
-- **B1. Attendance** — daily capture + in-app/parent view; biometric (ZKTeco/RFID) CSV import hook. (Absence alert reuses A1's free WhatsApp link.)
-- **B2. Tests / results** — test series, MCQ/marks, **ranked result cards** (MDCAT/ECAT/NTS prep). The defining coaching feature.
+- ✅ **B1. Attendance** *(shipped)* — daily capture, batch/course/time filtering, CSV import, per-student summary. (Absence alert can later reuse A1's free WhatsApp link.)
+- ✅ **B2. Tests / results** *(shipped 2026-08-31)* — tests per course/batch, single-total or subject-wise marks, **ranked result cards** (MDCAT/ECAT/NTS), pass/fail, CSV export + marks import, per-student result history on the profile.
 - **B3. Teacher/staff management + payroll + revenue-share** (per-student/per-batch commission).
 
 ### Phase C — Engagement (free to operate)
