@@ -2,6 +2,7 @@ import { Router } from "express";
 import { getPool, sql } from "../db";
 import { requireRole, type AuthedRequest } from "../auth";
 import { scope } from "../tenant";
+import { MAX_IMPORT_ROWS, rowGetter, lc, trimStr, toDateStr, type ImportResult } from "../importUtils";
 
 const router = Router();
 
@@ -31,6 +32,17 @@ router.get("/roster", async (req, res, next) => {
     if (search) {
       request.input("search", sql.NVarChar, `%${search}%`);
       extra.push("(s.fullName LIKE @search OR s.registryId LIKE @search)");
+    }
+    // Course / batch filters (case-insensitive; batch carries the time slot).
+    const course = String(req.query.course || "").trim();
+    if (course && course !== "all") {
+      request.input("course", sql.NVarChar, course);
+      extra.push("LOWER(s.course) = LOWER(@course)");
+    }
+    const batch = String(req.query.batch || "").trim();
+    if (batch && batch !== "all") {
+      request.input("batch", sql.NVarChar, batch);
+      extra.push("LOWER(s.batch) = LOWER(@batch)");
     }
     const extraClause = extra.length ? "AND " + extra.join(" AND ") : "";
     const r = await request.query(`
@@ -115,6 +127,57 @@ router.get("/summary/:studentId", async (req, res, next) => {
     const total = Number(row.totalMarked || 0);
     const attendancePct = total > 0 ? Math.round((present / total) * 1000) / 10 : 0;
     res.json({ ...row, attendancePct });
+  } catch (e) { next(e); }
+});
+
+// POST /api/attendance/import — bulk attendance from parsed CSV/XLSX rows.
+// Each row: registryId (identifies the student), date, status, note?. The student
+// is matched by registry ID within the entity; records upsert by (student, date).
+router.post("/import", canMark, async (req, res, next) => {
+  try {
+    const ctx = (req as AuthedRequest).ctx!;
+    const userId = (req as AuthedRequest).user?.userId ?? null;
+    const rows: Record<string, unknown>[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const validateOnly = !!req.body?.validateOnly;
+    if (!rows.length) return res.status(400).json({ error: "No rows to import" });
+    if (rows.length > MAX_IMPORT_ROWS) return res.status(400).json({ error: `Max ${MAX_IMPORT_ROWS} rows per import; split the file.` });
+
+    const pool = await getPool();
+    const s = scope(ctx);
+    const sRes = await s.apply(pool.request()).query(`SELECT id, registryId, branchId FROM dbo.Students WHERE 1=1 ${s.clause}`);
+    const byReg = new Map<string, { id: number; branchId: number }>(
+      sRes.recordset.map((x: { id: number; registryId: string; branchId: number }) => [lc(x.registryId), { id: x.id, branchId: x.branchId }])
+    );
+
+    const result: ImportResult = { validateOnly, total: rows.length, created: 0, skipped: [], errors: [] };
+    for (let i = 0; i < rows.length; i++) {
+      const g = rowGetter(rows[i]);
+      const rn = i + 2;
+      const reg = trimStr(g("registryid", "rollno", "roll", "regno", "registrationno"));
+      if (!reg) { result.errors.push({ row: rn, reason: "Missing registry ID" }); continue; }
+      const stu = byReg.get(lc(reg));
+      if (!stu) { result.errors.push({ row: rn, reason: `Student "${reg}" not found` }); continue; }
+      const date = toDateStr(g("date", "attendancedate"));
+      if (!date) { result.errors.push({ row: rn, reason: "Missing or invalid date" }); continue; }
+      const rawStatus = lc(g("status"));
+      let status = "present";
+      if (rawStatus) {
+        if (!STATUSES.has(rawStatus)) { result.errors.push({ row: rn, reason: `Invalid status "${rawStatus}"` }); continue; }
+        status = rawStatus;
+      }
+      const note = trimStr(g("note", "remarks"));
+      if (!validateOnly) {
+        await pool.request()
+          .input("ent", sql.Int, ctx.entityId).input("branch", sql.Int, stu.branchId)
+          .input("sid", sql.Int, stu.id).input("date", sql.Date, date)
+          .input("status", sql.NVarChar, status).input("note", sql.NVarChar, note).input("by", sql.Int, userId)
+          .query(`INSERT INTO dbo.Attendance (entityId, branchId, studentId, date, status, note, markedBy)
+                  VALUES (@ent,@branch,@sid,@date,@status,@note,@by)
+                  ON CONFLICT (studentId, date) DO UPDATE SET status=EXCLUDED.status, note=EXCLUDED.note, markedBy=EXCLUDED.markedBy, updatedAt=now()`);
+      }
+      result.created += 1;
+    }
+    res.json(result);
   } catch (e) { next(e); }
 });
 

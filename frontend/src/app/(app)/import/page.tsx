@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { coursesApi, studentsApi, branchesApi, getUser, type Branch, type ImportResult, type ImportRow } from "@/lib/api";
+import { coursesApi, studentsApi, attendanceApi, branchesApi, getUser, type Branch, type ImportResult, type ImportRow } from "@/lib/api";
 import { parseSpreadsheet } from "@/lib/parseSpreadsheet";
 
 const COURSE_COLS = ["name", "code", "level", "durationMonths", "admissionFee", "monthlyFee", "examFee", "branch"];
 const COURSE_EX = ["MDCAT Prep", "MD-01", "Advanced", "6", "5000", "8000", "3000", "Main Branch"];
 const STUDENT_COLS = ["fullName", "phone", "email", "registryId", "guardianName", "guardianRelation", "dateOfBirth", "address", "course", "batch", "branch", "status", "discountPct", "scholarship", "notes"];
 const STUDENT_EX = ["Ahmed Raza", "0300-1234567", "ahmed@example.com", "", "Raza Khan", "Father", "2005-06-15", "12 Model Town", "MDCAT Prep", "Morning A", "Main Branch", "active", "0", "0", ""];
+const ATTEND_COLS = ["registryId", "date", "status", "note"];
+const ATTEND_EX = ["CT-2026-0001", "2026-08-24", "present", ""];
 
 const ALLOWED = new Set(["entity_admin", "branch_manager", "front_desk"]);
 
@@ -174,6 +176,12 @@ export default function ImportPage() {
             hint="Columns: fullName (required), phone, email, registryId (auto if blank), guardianName, guardianRelation, dateOfBirth, address, course (must exist), batch, branch, status, discountPct, scholarship, notes. Duplicates (same registryId or phone) are skipped."
             cols={STUDENT_COLS} example={STUDENT_EX}
             run={guardBranch((rows, validateOnly, bId) => studentsApi.importRows({ rows, branchId: bId, validateOnly }))}
+          />
+          <ImportSection
+            step={3} title="Import Attendance" templateName="attendance-template.csv"
+            hint="Columns: registryId (required, must exist), date (YYYY-MM-DD, required), status (present/absent/late/leave), note. Existing records for the same student+date are updated. Target branch above is not used — each student's own branch is applied."
+            cols={ATTEND_COLS} example={ATTEND_EX}
+            run={(rows, validateOnly) => attendanceApi.importRows({ rows, validateOnly })}
           />
         </div>
       </div>

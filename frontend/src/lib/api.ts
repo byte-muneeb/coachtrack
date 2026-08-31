@@ -531,16 +531,20 @@ export type AttendanceSummary = {
 };
 
 export const attendanceApi = {
-  roster: (params: { date?: string; branch?: string; search?: string } = {}) => {
+  roster: (params: { date?: string; branch?: string; course?: string; batch?: string; search?: string } = {}) => {
     const q = new URLSearchParams();
     if (params.date) q.set("date", params.date);
     if (params.branch && params.branch !== "all") q.set("branch", params.branch);
+    if (params.course && params.course !== "all") q.set("course", params.course);
+    if (params.batch && params.batch !== "all") q.set("batch", params.batch);
     if (params.search) q.set("search", params.search);
     const qs = q.toString();
     return request<{ date: string; roster: RosterRow[] }>(`/api/attendance/roster${qs ? `?${qs}` : ""}`);
   },
   mark: (data: { date: string; marks: { studentId: number; status: AttendanceStatus; note?: string }[] }) =>
     request<{ saved: number; date: string }>("/api/attendance/mark", { method: "POST", body: JSON.stringify(data) }),
+  importRows: (data: { rows: ImportRow[]; validateOnly?: boolean }) =>
+    request<ImportResult>("/api/attendance/import", { method: "POST", body: JSON.stringify(data) }),
   summary: (studentId: number, params: { from?: string; to?: string } = {}) => {
     const q = new URLSearchParams();
     if (params.from) q.set("from", params.from);

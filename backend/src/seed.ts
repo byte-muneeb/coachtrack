@@ -100,8 +100,9 @@ async function seedEntity(pool: Awaited<ReturnType<typeof getPool>>, def: Entity
       .input("ent", sql.Int, entityId).input("branch", sql.Int, branchId)
       .input("rid", sql.NVarChar, registryId).input("name", sql.NVarChar, s.name).input("phone", sql.NVarChar, s.phone)
       .input("course", sql.NVarChar, def.courses[s.courseIx].name)
-      .query(`INSERT INTO Students (entityId, branchId, registryId, fullName, phone, course, status, commencementDate)
-              OUTPUT INSERTED.id VALUES (@ent,@branch,@rid,@name,@phone,@course,'active', now()::date)`);
+      .input("batch", sql.NVarChar, "Morning A")
+      .query(`INSERT INTO Students (entityId, branchId, registryId, fullName, phone, course, batch, status, commencementDate)
+              OUTPUT INSERTED.id VALUES (@ent,@branch,@rid,@name,@phone,@course,@batch,'active', now()::date)`);
     const sid = sr.recordset[0].id as number;
 
     const c = def.courses[s.courseIx];

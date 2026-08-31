@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { attendanceApi, branchesApi, type Branch, type RosterRow, type AttendanceStatus } from "@/lib/api";
+import { attendanceApi, branchesApi, coursesApi, type Branch, type Course, type Batch, type RosterRow, type AttendanceStatus } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
 
 const STATUS: { key: AttendanceStatus; label: string; on: string }[] = [
@@ -12,12 +12,19 @@ const STATUS: { key: AttendanceStatus; label: string; on: string }[] = [
 ];
 
 function today() { return new Date().toISOString().slice(0, 10); }
+const selCls = "rounded-lg border border-outline-variant bg-surface px-md py-sm font-body-md text-body-md outline-none focus:border-secondary";
 
 export default function AttendancePage() {
   const [date, setDate] = useState(today());
   const [branch, setBranch] = useState("all");
+  const [courseId, setCourseId] = useState(0); // 0 = all
+  const [batchName, setBatchName] = useState("all");
   const [search, setSearch] = useState("");
+
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [batches, setBatches] = useState<Batch[]>([]);
+
   const [roster, setRoster] = useState<RosterRow[]>([]);
   const [marks, setMarks] = useState<Record<number, AttendanceStatus>>({});
   const [loading, setLoading] = useState(true);
@@ -25,19 +32,31 @@ export default function AttendancePage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => { branchesApi.list().then(setBranches).catch(() => {}); }, []);
+  useEffect(() => {
+    branchesApi.list().then(setBranches).catch(() => {});
+    coursesApi.list().then(setCourses).catch(() => {});
+  }, []);
+
+  // When course changes, load its batches (each carries a time slot).
+  useEffect(() => {
+    setBatchName("all");
+    if (!courseId) { setBatches([]); return; }
+    coursesApi.get(courseId).then((c) => setBatches(c.batches ?? [])).catch(() => setBatches([]));
+  }, [courseId]);
+
+  const courseName = useMemo(() => courses.find((c) => c.id === courseId)?.name, [courses, courseId]);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null); setMsg(null);
     try {
-      const { roster } = await attendanceApi.roster({ date, branch, search });
+      const { roster } = await attendanceApi.roster({ date, branch, course: courseName, batch: batchName, search });
       setRoster(roster);
       const init: Record<number, AttendanceStatus> = {};
       for (const r of roster) if (r.status) init[r.studentId] = r.status;
       setMarks(init);
     } catch (e) { setError(e instanceof Error ? e.message : "Failed to load roster"); }
     finally { setLoading(false); }
-  }, [date, branch, search]);
+  }, [date, branch, courseName, batchName, search]);
   useEffect(() => { const t = setTimeout(load, search ? 300 : 0); return () => clearTimeout(t); }, [load, search]);
 
   const counts = useMemo(() => {
@@ -65,22 +84,37 @@ export default function AttendancePage() {
   return (
     <main className="ml-[280px] pt-16 min-h-screen p-lg">
       <div className="mx-auto max-w-[1000px] space-y-lg">
-        <PageHeader title="Attendance" subtitle="Take daily attendance for a branch. Late still counts as attended." icon="fact_check" />
+        <PageHeader
+          title="Attendance"
+          subtitle="Take daily attendance by course, batch (time slot), and branch. Late still counts as attended."
+          icon="fact_check"
+          actions={
+            <a href="/import" className="flex items-center gap-xs rounded-lg border border-outline-variant px-md py-sm font-label-md text-label-md font-semibold text-on-surface hover:bg-surface-container">
+              <span className="material-symbols-outlined text-[18px]">upload_file</span> Import attendance
+            </a>
+          }
+        />
 
         {/* Controls */}
         <div className="flex flex-wrap items-center gap-md rounded-xl border border-outline-variant bg-surface-container-lowest p-md">
           <label className="flex items-center gap-xs">
             <span className="material-symbols-outlined text-[18px] text-on-surface-variant">calendar_today</span>
-            <input type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value || today())}
-              className="rounded-lg border border-outline-variant bg-surface px-md py-sm font-body-md text-body-md outline-none focus:border-secondary" />
+            <input type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value || today())} className={selCls} />
           </label>
           {branches.length > 1 && (
-            <select value={branch} onChange={(e) => setBranch(e.target.value)}
-              className="rounded-lg border border-outline-variant bg-surface px-md py-sm font-body-md text-body-md outline-none focus:border-secondary">
+            <select value={branch} onChange={(e) => setBranch(e.target.value)} className={selCls} title="Branch">
               <option value="all">All branches</option>
               {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
           )}
+          <select value={courseId} onChange={(e) => setCourseId(Number(e.target.value))} className={selCls} title="Course">
+            <option value={0}>All courses</option>
+            {courses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <select value={batchName} onChange={(e) => setBatchName(e.target.value)} className={selCls} disabled={!courseId} title="Batch (time slot)">
+            <option value="all">{courseId ? "All batches" : "Batch — pick a course"}</option>
+            {batches.map((b) => <option key={b.id} value={b.name}>{b.name}{b.timeSlot ? ` — ${b.timeSlot}` : ""}</option>)}
+          </select>
           <label className="flex flex-1 items-center gap-xs rounded-lg border border-outline-variant bg-surface px-md py-sm">
             <span className="material-symbols-outlined text-[18px] text-on-surface-variant">search</span>
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name or registry ID"
