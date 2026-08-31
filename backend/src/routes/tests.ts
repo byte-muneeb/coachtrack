@@ -264,7 +264,7 @@ router.post("/:id/results", canWrite, async (req, res, next) => {
     const test = await loadTest(req as AuthedRequest, id);
     if (!test) return res.status(404).json({ error: "Test not found" });
     const hasSubjects = (test.subjects as unknown[]).length > 0;
-    const subjectIds = new Set((test.subjects as { id: number }[]).map((x) => x.id));
+    const subjMax = new Map((test.subjects as { id: number; maxMarks: number }[]).map((x) => [x.id, x.maxMarks]));
     const marks: { studentId: number; absent?: boolean; remarks?: string; total?: number; subjects?: { subjectId: number; marks: number }[] }[] =
       Array.isArray(req.body?.marks) ? req.body.marks : [];
     if (!marks.length) return res.status(400).json({ error: "No marks to save" });
@@ -288,13 +288,15 @@ router.post("/:id/results", canWrite, async (req, res, next) => {
       const subjMarks: { subjectId: number; marks: number }[] = [];
       if (hasSubjects) {
         for (const sm of m.subjects || []) {
-          if (!subjectIds.has(Number(sm.subjectId))) continue;
-          const val = Math.max(0, num(sm.marks));
-          subjMarks.push({ subjectId: Number(sm.subjectId), marks: val });
+          const sidk = Number(sm.subjectId);
+          if (!subjMax.has(sidk)) continue;
+          // Clamp each subject's marks to [0, subject max].
+          const val = Math.min(Math.max(0, num(sm.marks)), subjMax.get(sidk)!);
+          subjMarks.push({ subjectId: sidk, marks: val });
           total += val;
         }
       } else {
-        total = Math.max(0, num(m.total));
+        total = Math.min(Math.max(0, num(m.total)), test.totalMarks); // clamp to [0, total]
       }
       if (absent) total = 0;
 
@@ -363,7 +365,7 @@ router.post("/:id/import", canWrite, async (req, res, next) => {
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
     const test = await loadTest(req as AuthedRequest, id);
     if (!test) return res.status(404).json({ error: "Test not found" });
-    const subjects = test.subjects as { id: number; name: string }[];
+    const subjects = test.subjects as { id: number; name: string; maxMarks: number }[];
     const hasSubjects = subjects.length > 0;
 
     const rows: Record<string, unknown>[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
@@ -389,12 +391,12 @@ router.post("/:id/import", canWrite, async (req, res, next) => {
       const subjMarks: { subjectId: number; marks: number }[] = [];
       if (hasSubjects && !absent) {
         for (const su of subjects) {
-          const val = Math.max(0, toNum(g(su.name)));
+          const val = Math.min(Math.max(0, toNum(g(su.name))), su.maxMarks); // clamp to subject max
           subjMarks.push({ subjectId: su.id, marks: val });
           total += val;
         }
       } else if (!absent) {
-        total = Math.max(0, toNum(g("marks", "obtained", "obtainedmarks", "total", "score")));
+        total = Math.min(Math.max(0, toNum(g("marks", "obtained", "obtainedmarks", "total", "score"))), test.totalMarks);
       }
       if (!validateOnly) {
         const tx = new sql.Transaction(pool);

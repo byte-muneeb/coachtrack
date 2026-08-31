@@ -56,8 +56,8 @@ export default function TestDetailPage() {
   function rowTotal(sid: number): number {
     if (absent[sid]) return 0;
     const row = marks[sid] || {};
-    if (hasSubjects) return subjects.reduce((a, s) => a + (Number(row[String(s.id)]) || 0), 0);
-    return Number(row.total) || 0;
+    if (hasSubjects) return subjects.reduce((a, s) => a + Math.min(Math.max(0, Number(row[String(s.id)]) || 0), s.maxMarks), 0);
+    return Math.min(Math.max(0, Number(row.total) || 0), test?.totalMarks ?? Infinity);
   }
 
   async function save() {
