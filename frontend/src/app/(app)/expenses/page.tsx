@@ -5,6 +5,7 @@ import { expensesApi, type Expense, type ExpenseSummary } from "@/lib/api";
 import StatCard from "@/components/StatCard";
 import PageHeader from "@/components/PageHeader";
 import { inputCls } from "@/components/form";
+import { fmtDate } from "@/lib/date";
 
 const rs = (n: number) => "Rs " + Number(n || 0).toLocaleString("en-PK");
 const CATEGORIES = ["Rent", "Salaries", "Utilities", "Marketing", "Supplies", "Maintenance", "Other"];
@@ -111,7 +112,7 @@ export default function ExpensesPage() {
                 <tr><td colSpan={6} className="px-md py-xl text-center text-on-surface-variant font-body-md">No expenses yet. Click “Add Expense”.</td></tr>
               ) : expenses.map((x) => (
                 <tr key={x.id} className="hover:bg-secondary/5">
-                  <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{x.date ? x.date.slice(0, 10) : "—"}</td>
+                  <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{fmtDate(x.date) || "—"}</td>
                   <td className="px-md py-sm font-body-md text-body-md">{x.category || "—"}</td>
                   <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{x.description || "—"}</td>
                   <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{x.paidVia || "—"}</td>

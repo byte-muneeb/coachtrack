@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { remindersApi, type ReminderRule, type ReminderQueueItem } from "@/lib/api";
+import { fmtDate } from "@/lib/date";
 
 const rs = (n: number) => "Rs " + Number(n || 0).toLocaleString("en-PK");
 const CHANNELS = ["whatsapp", "sms", "email"];
@@ -143,7 +144,7 @@ export default function RemindersPage() {
                     <tr><td colSpan={6} className="px-md py-xl text-center text-on-surface-variant font-body-md">No upcoming reminders (need active rules + unpaid vouchers with due dates).</td></tr>
                   ) : queue.slice(0, 30).map((q, i) => (
                     <tr key={i} className="hover:bg-secondary/5">
-                      <td className="px-md py-sm font-mono-data text-mono-data">{q.scheduledFor}</td>
+                      <td className="px-md py-sm font-mono-data text-mono-data">{fmtDate(q.scheduledFor)}</td>
                       <td className="px-md py-sm font-body-md text-body-md">{q.studentName}</td>
                       <td className="px-md py-sm font-mono-data text-mono-data text-on-surface-variant">{q.voucherNo}</td>
                       <td className="px-md py-sm font-mono-data text-mono-data">{rs(q.amount)}</td>

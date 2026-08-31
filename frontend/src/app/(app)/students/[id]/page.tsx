@@ -9,6 +9,7 @@ import {
 } from "@/lib/api";
 import StatCard from "@/components/StatCard";
 import { Select, numberGuard, noWheel } from "@/components/form";
+import { fmtDate } from "@/lib/date";
 
 const rs = (n: number) => "Rs " + Number(n || 0).toLocaleString("en-PK");
 const inputCls =
@@ -358,7 +359,7 @@ function StatementModal({ studentId, onClose }: { studentId: number; onClose: ()
                     <tr><td colSpan={6} className="py-md text-center text-neutral-500">No transactions yet.</td></tr>
                   ) : data.rows.map((r, i) => (
                     <tr key={i} className="border-b border-dashed border-neutral-300">
-                      <td className="py-[5px]">{r.date}</td>
+                      <td className="py-[5px]">{fmtDate(r.date)}</td>
                       <td className="py-[5px] font-mono-data">{r.ref}</td>
                       <td className="py-[5px]">{r.description}</td>
                       <td className="py-[5px] text-right font-mono-data">{r.debit ? rs(r.debit) : ""}</td>

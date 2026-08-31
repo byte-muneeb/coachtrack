@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { coursesApi, type Course, type Batch } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
 import { inputCls } from "@/components/form";
+import { fmtDate } from "@/lib/date";
 
 const rs = (n: number) => "Rs " + Number(n || 0).toLocaleString("en-PK");
 
@@ -276,7 +277,7 @@ function BatchManager({ course, onClose, onChanged }: { course: Course; onClose:
                   <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{b.timeSlot || "—"}</td>
                   <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{b.teacher || "—"}</td>
                   <td className="px-md py-sm font-mono-data text-mono-data text-on-surface">{rs(b.monthlyFee)}/mo</td>
-                  <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{b.startDate || b.endDate ? `${b.startDate ? b.startDate.slice(0, 10) : "—"} → ${b.endDate ? b.endDate.slice(0, 10) : "—"}` : "—"}</td>
+                  <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{b.startDate || b.endDate ? `${fmtDate(b.startDate) || "—"} → ${fmtDate(b.endDate) || "—"}` : "—"}</td>
                   <td className="px-md py-sm">
                     <span className={`rounded-full px-sm py-[2px] font-label-md text-label-md capitalize ${b.status === "active" ? "bg-green-100 text-green-800" : "bg-surface-container-high text-on-surface-variant"}`}>{b.status}</span>
                   </td>

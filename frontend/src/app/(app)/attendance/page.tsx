@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { attendanceApi, branchesApi, coursesApi, type Branch, type Course, type Batch, type RosterRow, type AttendanceStatus } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
+import { exportCsv } from "@/lib/exportCsv";
+import { fmtDate } from "@/lib/date";
 
 const STATUS: { key: AttendanceStatus; label: string; on: string }[] = [
   { key: "present", label: "P", on: "bg-emerald-500 text-white ring-emerald-500" },
@@ -79,6 +81,17 @@ export default function AttendancePage() {
     finally { setSaving(false); }
   }
 
+  function exportRoster() {
+    exportCsv(`attendance-${date}`, roster, [
+      { header: "Registry ID", value: (r: RosterRow) => r.registryId },
+      { header: "Student", value: (r: RosterRow) => r.studentName },
+      { header: "Course", value: (r: RosterRow) => r.course || "" },
+      { header: "Batch", value: (r: RosterRow) => r.batch || "" },
+      { header: "Status", value: (r: RosterRow) => marks[r.studentId] || r.status || "unmarked" },
+      { header: "Date", value: () => fmtDate(date) },
+    ]);
+  }
+
   const chip = "rounded-md px-sm py-[3px] font-label-md text-label-md font-semibold";
 
   return (
@@ -89,9 +102,15 @@ export default function AttendancePage() {
           subtitle="Take daily attendance by course, batch (time slot), and branch. Late still counts as attended."
           icon="fact_check"
           actions={
-            <a href="/import" className="flex items-center gap-xs rounded-lg border border-outline-variant px-md py-sm font-label-md text-label-md font-semibold text-on-surface hover:bg-surface-container">
-              <span className="material-symbols-outlined text-[18px]">upload_file</span> Import attendance
-            </a>
+            <div className="flex items-center gap-sm">
+              <button onClick={exportRoster} disabled={roster.length === 0}
+                className="flex items-center gap-xs rounded-lg border border-outline-variant px-md py-sm font-label-md text-label-md font-semibold text-on-surface hover:bg-surface-container disabled:opacity-50">
+                <span className="material-symbols-outlined text-[18px]">download</span> Export CSV
+              </button>
+              <a href="/import" className="flex items-center gap-xs rounded-lg border border-outline-variant px-md py-sm font-label-md text-label-md font-semibold text-on-surface hover:bg-surface-container">
+                <span className="material-symbols-outlined text-[18px]">upload_file</span> Import attendance
+              </a>
+            </div>
           }
         />
 

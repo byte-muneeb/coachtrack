@@ -8,6 +8,7 @@ import {
 import PageHeader from "@/components/PageHeader";
 import { Field, TextInput, NumberInput, Select, inputCls } from "@/components/form";
 import { exportCsv } from "@/lib/exportCsv";
+import { fmtDate } from "@/lib/date";
 
 const rs = (n: number) => "Rs " + Number(n || 0).toLocaleString("en-PK");
 const STATUS = ["all", "unpaid", "partial", "paid"];
@@ -57,7 +58,7 @@ export default function VouchersPage() {
       { header: "Student", value: (v) => v.studentName || "" },
       { header: "Registry ID", value: (v) => v.studentRegistryId || "" },
       { header: "Description", value: (v) => v.description || "" },
-      { header: "Due", value: (v) => (v.dueDate ? v.dueDate.slice(0, 10) : "") },
+      { header: "Due", value: (v) => fmtDate(v.dueDate) },
       { header: "Amount", value: (v) => v.amount },
       { header: "Paid", value: (v) => v.paidAmount },
       { header: "Status", value: (v) => v.status },
@@ -229,7 +230,7 @@ export default function VouchersPage() {
                     <td className="px-md py-sm font-mono-data text-mono-data text-on-surface-variant">{v.voucherNo}</td>
                     <td className="px-md py-sm font-body-md text-body-md">{v.studentName}<div className="font-label-md text-label-md text-on-surface-variant">{v.studentRegistryId}</div></td>
                     <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{v.description || "—"}</td>
-                    <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{v.dueDate ? v.dueDate.slice(0, 10) : "—"}</td>
+                    <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{fmtDate(v.dueDate) || "—"}</td>
                     <td className="px-md py-sm font-mono-data text-mono-data">{rs(v.amount)}</td>
                     <td className="px-md py-sm font-mono-data text-mono-data">{rs(v.paidAmount)}</td>
                     <td className="px-md py-sm"><StatusPill v={v} /></td>
@@ -464,7 +465,7 @@ function BulkVoucherPrint({ ids, profile, onClose }: { ids: number[]; profile: I
                   </div>
                   <div className="mt-sm flex justify-between text-[12px]">
                     <span>{v.studentName} ({v.studentRegistryId})</span>
-                    <span>Due: {v.dueDate ? v.dueDate.slice(0, 10) : "—"}</span>
+                    <span>Due: {fmtDate(v.dueDate) || "—"}</span>
                   </div>
                   <table className="mt-sm w-full text-left text-[12px]">
                     <tbody>
@@ -533,8 +534,8 @@ function VoucherPrint({ voucher, profile, onClose }: { voucher: Voucher; profile
             {/* meta panel */}
             <div className="grid grid-cols-3 gap-md rounded-xl border border-outline-variant bg-surface-container-low p-md">
               <div><p className="text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">Student</p><p className="text-[14px] font-semibold text-primary">{voucher.studentName}</p><p className="font-mono-data text-[11px] text-on-surface-variant">{voucher.studentRegistryId}</p></div>
-              <div><p className="text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">Generated</p><p className="text-[14px] text-on-surface">{voucher.generateDate ? voucher.generateDate.slice(0, 10) : "—"}</p></div>
-              <div className="text-right"><p className="text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">Due · Expiry</p><p className="text-[14px] font-semibold text-primary">{voucher.dueDate ? voucher.dueDate.slice(0, 10) : "—"}</p><p className="text-[11px] text-error">exp {voucher.expiryDate ? voucher.expiryDate.slice(0, 10) : "—"}</p></div>
+              <div><p className="text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">Generated</p><p className="text-[14px] text-on-surface">{fmtDate(voucher.generateDate) || "—"}</p></div>
+              <div className="text-right"><p className="text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">Due · Expiry</p><p className="text-[14px] font-semibold text-primary">{fmtDate(voucher.dueDate) || "—"}</p><p className="text-[11px] text-error">exp {fmtDate(voucher.expiryDate) || "—"}</p></div>
             </div>
 
             {/* items */}
@@ -598,7 +599,7 @@ function ReceiptWindow({ voucher, payment, profile, onClose }: { voucher: Vouche
 
           <div className="mt-md flex justify-between text-[12px] text-neutral-600">
             <span>Receipt #: <span className="font-mono-data text-black">RCT-{String(payment.id).padStart(5, "0")}</span></span>
-            <span>Date: <span className="text-black">{payment.paidAt ? payment.paidAt.slice(0, 10) : ""}</span></span>
+            <span>Date: <span className="text-black">{fmtDate(payment.paidAt)}</span></span>
           </div>
 
           <div className="mt-md space-y-[7px]">
