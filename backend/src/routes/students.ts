@@ -3,6 +3,7 @@ import { getPool, sql, type SqlPool } from "../db";
 import { logAudit } from "../audit";
 import { requireRole, type AuthedRequest } from "../auth";
 import { scope, resolveWriteBranch } from "../tenant";
+import { createVoucher } from "./vouchers";
 import { MAX_IMPORT_ROWS, rowGetter, lc, trimStr, toNum, toDateStr, type ImportResult } from "../importUtils";
 
 const router = Router();
@@ -24,9 +25,23 @@ router.post("/import", canWrite, async (req, res, next) => {
     const defaultBranch = resolveWriteBranch(ctx, req.body?.branchId != null ? Number(req.body.branchId) : null);
     if (defaultBranch == null) return res.status(400).json({ error: "Select a target branch for the import" });
 
-    // Existing courses (entity) → case-insensitive name match to canonical name.
-    const cRes = await pool.request().input("ent", sql.Int, ctx.entityId).query("SELECT name FROM dbo.Courses WHERE entityId=@ent");
-    const courseMap = new Map<string, string>(cRes.recordset.map((c: { name: string }) => [lc(c.name), c.name]));
+    // Existing courses (entity) → case-insensitive name match to canonical name + id.
+    const cRes = await pool.request().input("ent", sql.Int, ctx.entityId).query("SELECT id, name FROM dbo.Courses WHERE entityId=@ent");
+    const courseMap = new Map<string, { id: number; name: string }>(
+      cRes.recordset.map((c: { id: number; name: string }) => [lc(c.name), { id: c.id, name: c.name }])
+    );
+
+    // Active batches in scope → for optional enroll-on-import. A `batch` cell links
+    // the new student to a real batch (matched by course + batch name + branch), so
+    // batch/course filtering and attendance work immediately. Keyed course+name+branch.
+    const bScope = scope(ctx);
+    const batRes = await bScope.apply(pool.request())
+      .query(`SELECT id, courseId, branchId, name, monthlyFee FROM dbo.Batches WHERE status='active' ${bScope.clause}`);
+    const batchKey = (cid: number, name: string, bid: number) => `${cid}::${lc(name)}::${bid}`;
+    const batchByKey = new Map<string, { id: number; courseId: number; branchId: number; name: string; monthlyFee: number }>(
+      batRes.recordset.map((bt: { id: number; courseId: number; branchId: number; name: string; monthlyFee: number }) =>
+        [batchKey(bt.courseId, bt.name, bt.branchId), bt])
+    );
 
     // Existing students (entity) for duplicate detection.
     const sRes = await pool.request().input("ent", sql.Int, ctx.entityId).query("SELECT registryId, phone FROM dbo.Students WHERE entityId=@ent");
@@ -56,11 +71,13 @@ router.post("/import", canWrite, async (req, res, next) => {
 
       // Course: if provided, must match an existing course (case-insensitive).
       let courseName: string | null = null;
+      let courseId: number | null = null;
       const cCell = trimStr(g("course", "coursename"));
       if (cCell) {
         const canon = courseMap.get(lc(cCell));
         if (!canon) { result.errors.push({ row: rn, reason: `Course "${cCell}" not found — upload courses first` }); continue; }
-        courseName = canon;
+        courseName = canon.name;
+        courseId = canon.id;
       }
 
       // Branch override by name.
@@ -70,6 +87,18 @@ router.post("/import", canWrite, async (req, res, next) => {
         const bid = branchMap.get(lc(brName));
         if (!bid) { result.errors.push({ row: rn, reason: `Branch "${brName}" not found` }); continue; }
         branchId = bid;
+      }
+
+      // Enroll-on-import: a `batch` value links the student to a real batch so the
+      // student↔batch relationship (used by attendance + fee filters) exists at once.
+      // Requires the course, and the batch must exist within that course + branch.
+      const batchCell = trimStr(g("batch"));
+      let enrollBatch: { id: number; courseId: number; branchId: number; name: string; monthlyFee: number } | null = null;
+      if (batchCell) {
+        if (!courseId) { result.errors.push({ row: rn, reason: `Provide the course to enroll "${fullName}" in batch "${batchCell}"` }); continue; }
+        const bt = batchByKey.get(batchKey(courseId, batchCell, branchId));
+        if (!bt) { result.errors.push({ row: rn, reason: `Batch "${batchCell}" not found in course "${courseName}" for that branch — create the batch first` }); continue; }
+        enrollBatch = bt;
       }
 
       // Duplicate detection (phone).
@@ -92,8 +121,9 @@ router.post("/import", canWrite, async (req, res, next) => {
       seenReg.add(lc(registryId));
       if (phone) seenPhone.add(lc(phone));
 
+      const startDate = toDateStr(g("commencementdate", "joindate", "admissiondate"));
       if (!validateOnly) {
-        await pool.request()
+        const ins = await pool.request()
           .input("ent", sql.Int, ctx.entityId).input("branch", sql.Int, branchId)
           .input("rid", sql.NVarChar, registryId).input("name", sql.NVarChar, fullName)
           .input("email", sql.NVarChar, trimStr(g("email")))
@@ -103,17 +133,42 @@ router.post("/import", canWrite, async (req, res, next) => {
           .input("gname", sql.NVarChar, trimStr(g("guardianname", "guardian", "parentname", "fathername")))
           .input("grel", sql.NVarChar, trimStr(g("guardianrelation", "relation")))
           .input("course", sql.NVarChar, courseName)
-          .input("batch", sql.NVarChar, trimStr(g("batch")))
-          .input("comm", sql.Date, toDateStr(g("commencementdate", "joindate", "admissiondate")))
+          .input("batch", sql.NVarChar, batchCell)
+          .input("comm", sql.Date, startDate)
           .input("status", sql.NVarChar, trimStr(g("status")) || "active")
           .input("disc", sql.Float, toNum(g("discountpct", "discount")))
           .input("schol", sql.Float, toNum(g("scholarship")))
           .input("notes", sql.NVarChar, trimStr(g("notes")))
           .query(`INSERT INTO dbo.Students
                     (entityId, branchId, registryId, fullName, email, phone, dateOfBirth, address, guardianName, guardianRelation, course, batch, commencementDate, status, discountPct, scholarship, notes)
+                  OUTPUT INSERTED.id
                   VALUES (@ent,@branch,@rid,@name,@email,@phone,@dob,@addr,@gname,@grel,@course,@batch,@comm,@status,@disc,@schol,@notes)`);
+        const newStudentId = ins.recordset[0].id as number;
+
+        // Create the active enrollment + charge the course admission fee once
+        // (this student is new, so it is always their first enrollment in the course).
+        if (enrollBatch) {
+          await pool.request()
+            .input("ent", sql.Int, ctx.entityId).input("branch", sql.Int, enrollBatch.branchId)
+            .input("sid", sql.Int, newStudentId).input("bid", sql.Int, enrollBatch.id)
+            .input("cid", sql.Int, enrollBatch.courseId).input("fee", sql.Float, enrollBatch.monthlyFee)
+            .input("start", sql.Date, startDate)
+            .query(`INSERT INTO dbo.Enrollments (entityId, branchId, studentId, batchId, courseId, monthlyFee, startDate)
+                    VALUES (@ent,@branch,@sid,@bid,@cid,@fee,@start)`);
+          const cr = await pool.request().input("cid", sql.Int, enrollBatch.courseId).input("ent", sql.Int, ctx.entityId)
+            .query(`SELECT name, admissionFee FROM dbo.Courses WHERE id=@cid AND entityId=@ent`);
+          const course = cr.recordset[0];
+          if (course && course.admissionFee > 0) {
+            await createVoucher(pool, {
+              entityId: ctx.entityId!, branchId: enrollBatch.branchId,
+              studentId: newStudentId, amount: course.admissionFee, description: `Admission Fee — ${course.name}`,
+              items: [{ batchId: null, label: `${course.name} — Admission Fee`, amount: course.admissionFee }],
+            });
+          }
+        }
       }
       result.created += 1;
+      if (enrollBatch) result.enrolled = (result.enrolled ?? 0) + 1;
     }
     res.json(result);
   } catch (e) { next(e); }

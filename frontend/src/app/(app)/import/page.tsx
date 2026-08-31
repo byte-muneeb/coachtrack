@@ -25,6 +25,9 @@ function Summary({ r }: { r: ImportResult }) {
     <div className="mt-md space-y-sm">
       <div className="flex flex-wrap gap-sm text-[13px]">
         <span className="rounded-md bg-green-100 px-sm py-[3px] font-semibold text-green-800">{r.validateOnly ? "Will import" : "Imported"}: {r.created}</span>
+        {r.enrolled != null && r.enrolled > 0 && (
+          <span className="rounded-md bg-blue-100 px-sm py-[3px] font-semibold text-blue-800">{r.validateOnly ? "Will enroll" : "Enrolled"}: {r.enrolled}</span>
+        )}
         <span className="rounded-md bg-amber-100 px-sm py-[3px] font-semibold text-amber-800">Skipped: {r.skipped.length}</span>
         <span className="rounded-md bg-red-100 px-sm py-[3px] font-semibold text-red-800">Errors: {r.errors.length}</span>
         <span className="rounded-md bg-surface-container px-sm py-[3px] text-on-surface-variant">Total rows: {r.total}</span>
@@ -173,7 +176,7 @@ export default function ImportPage() {
           />
           <ImportSection
             step={2} title="Import Students" templateName="students-template.csv"
-            hint="Columns: fullName (required), phone, email, registryId (auto if blank), guardianName, guardianRelation, dateOfBirth, address, course (must exist), batch, branch, status, discountPct, scholarship, notes. Duplicates (same registryId or phone) are skipped."
+            hint="Columns: fullName (required), phone, email, registryId (auto if blank), guardianName, guardianRelation, dateOfBirth, address, course (must exist), batch, branch, status, discountPct, scholarship, notes. Fill in course + batch to auto-enroll the student into that batch (the batch must already exist in that course & branch) — this makes them show up in batch/course attendance and charges the admission fee once. Duplicates (same registryId or phone) are skipped."
             cols={STUDENT_COLS} example={STUDENT_EX}
             run={guardBranch((rows, validateOnly, bId) => studentsApi.importRows({ rows, branchId: bId, validateOnly }))}
           />

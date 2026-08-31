@@ -129,6 +129,7 @@ export type ImportResult = {
   validateOnly: boolean;
   total: number;
   created: number;
+  enrolled?: number;
   skipped: { row: number; reason: string }[];
   errors: { row: number; reason: string }[];
 };

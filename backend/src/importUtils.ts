@@ -12,6 +12,7 @@ export type ImportResult = {
   validateOnly: boolean;
   total: number;
   created: number;      // rows that were (or would be) inserted
+  enrolled?: number;    // students auto-enrolled into a batch during import
   skipped: RowIssue[];  // e.g. duplicates
   errors: RowIssue[];   // e.g. missing course, missing required field
 };
