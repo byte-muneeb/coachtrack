@@ -2,15 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  vouchersApi, studentsApi, feesApi, settingsApi, coursesApi,
+  vouchersApi, studentsApi, feesApi, settingsApi, coursesApi, remindersApi,
   type Voucher, type Student, type FeeComponent, type InstituteProfile, type Payment, type Course,
 } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
 import { Field, TextInput, NumberInput, Select, inputCls } from "@/components/form";
 import { exportCsv } from "@/lib/exportCsv";
 import { fmtDate } from "@/lib/date";
+import { waLink, renderTemplate } from "@/lib/whatsapp";
 
 const rs = (n: number) => "Rs " + Number(n || 0).toLocaleString("en-PK");
+const DEFAULT_REMINDER = "Dear Parent, this is a reminder that {StudentName}'s fee of Rs {Amount} is due on {DueDate}. Please pay on time to avoid interruption. - {InstituteName}";
 const STATUS = ["all", "unpaid", "partial", "paid"];
 
 // yyyy-MM helpers for the generation dialog defaults.
@@ -44,6 +46,7 @@ export default function VouchersPage() {
   const [courses, setCourses] = useState<Course[]>([]);
   const [methods, setMethods] = useState<string[]>([]);
   const [profile, setProfile] = useState<InstituteProfile | null>(null);
+  const [reminderTpl, setReminderTpl] = useState<string>(DEFAULT_REMINDER);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [generateOpen, setGenerateOpen] = useState(false);
@@ -114,7 +117,21 @@ export default function VouchersPage() {
     coursesApi.list().then(setCourses).catch(() => {});
     vouchersApi.paymentMethods().then(setMethods).catch(() => setMethods([]));
     settingsApi.profile().then(setProfile).catch(() => {});
+    remindersApi.settings().then((s) => { if (s.template) setReminderTpl(s.template); }).catch(() => {});
   }, []);
+
+  // Free WhatsApp click-to-send: open wa.me with the entity's reminder message.
+  function sendReminder(v: Voucher) {
+    const msg = renderTemplate(reminderTpl, {
+      StudentName: v.studentName || "", ParentName: "Parent",
+      Amount: Number(v.amount - v.paidAmount).toLocaleString("en-PK"),
+      DueDate: v.dueDate ? fmtDate(v.dueDate) : "—",
+      VoucherNo: v.voucherNo, InstituteName: profile?.name || "our academy",
+    });
+    const link = waLink(v.studentPhone, msg);
+    if (!link) { alert(`No valid WhatsApp number on file for ${v.studentName}.`); return; }
+    window.open(link, "_blank", "noopener");
+  }
 
   async function del(v: Voucher) {
     if (!confirm(`Delete voucher ${v.voucherNo}?`)) return;
@@ -245,6 +262,11 @@ export default function VouchersPage() {
                         <button onClick={() => openPrint(v)} className="flex h-8 w-8 items-center justify-center rounded-md text-on-surface-variant hover:bg-surface-container-high" title="Print voucher">
                           <span className="material-symbols-outlined text-[20px]">print</span>
                         </button>
+                        {remaining > 0 && (
+                          <button onClick={() => sendReminder(v)} className="flex h-8 w-8 items-center justify-center rounded-md text-emerald-600 hover:bg-emerald-50 disabled:opacity-40" title={v.studentPhone ? "Send fee reminder on WhatsApp" : "No phone number on file"} disabled={!v.studentPhone}>
+                            <span className="material-symbols-outlined text-[20px]">chat</span>
+                          </button>
+                        )}
                         {remaining > 0 && (
                           <button onClick={() => setPayFor(v)} className="rounded-md bg-secondary px-sm py-[4px] font-label-md text-label-md text-on-secondary hover:opacity-90">Record Payment</button>
                         )}
@@ -500,50 +522,39 @@ function VoucherPrint({ voucher, profile, onClose }: { voucher: Voucher; profile
   const name = profile?.name || "Coaching Centre";
   const line2 = [profile?.address, profile?.city].filter(Boolean).join(", ");
   const items = voucher.items && voucher.items.length > 0 ? voucher.items : null;
+  const [copies, setCopies] = useState<1 | 3>(1);
+  // A bank challan is the same voucher printed as Bank / Office / Student portions.
+  const labels = copies === 3 ? ["Bank Copy", "Office Copy", "Student Copy"] : [""];
 
-  return (
-    <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-auto bg-black/50 p-lg print:static print:bg-white print:p-0">
-      <div className="w-full max-w-[720px]">
-        <div className="mb-md flex items-center justify-end gap-sm no-print">
-          <button onClick={() => window.print()} className="flex items-center gap-xs rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90">
-            <span className="material-symbols-outlined text-[18px]">print</span> Print
-          </button>
-          <button onClick={onClose} className="rounded-lg border border-outline-variant bg-surface-container-lowest px-md py-sm font-label-md text-label-md text-on-surface hover:bg-surface-container-high">Close</button>
+  // One voucher portion. `condensed` tightens spacing so three fit one A4 page.
+  function copy(copyLabel: string, condensed: boolean) {
+    const pad = condensed ? "px-xl py-md" : "p-xl";
+    return (
+      <div className={`relative ${pad}`}>
+        {copyLabel && <span className="absolute right-xl top-md rounded border border-black px-sm py-[1px] text-[10px] font-bold uppercase tracking-wide">{copyLabel}</span>}
+        <div className={`border-b-2 border-black text-center ${condensed ? "pb-xs" : "pb-md"}`}>
+          <p className={`font-bold uppercase tracking-wide ${condensed ? "text-[15px]" : "text-[20px]"}`}>{name}</p>
+          {!condensed && profile?.tagline ? <p className="text-[11px]">{profile.tagline}</p> : null}
+          {line2 ? <p className={condensed ? "text-[10px]" : "text-[12px]"}>{line2}</p> : null}
+          {!condensed && profile?.phone ? <p className="text-[12px]">Tel: {profile.phone}</p> : null}
+          <p className={`font-semibold uppercase tracking-[0.25em] ${condensed ? "mt-[2px] text-[11px]" : "mt-sm text-[13px]"}`}>Fee Voucher</p>
         </div>
-
-        {/* Official black-and-white fee voucher */}
-        <div className="print-area relative border border-black bg-white p-xl text-black">
-          {/* Letterhead */}
-          <div className="border-b-2 border-black pb-md text-center">
-            <p className="text-[20px] font-bold uppercase tracking-wide">{name}</p>
-            {profile?.tagline ? <p className="text-[11px]">{profile.tagline}</p> : null}
-            {line2 ? <p className="text-[12px]">{line2}</p> : null}
-            {profile?.phone ? <p className="text-[12px]">Tel: {profile.phone}</p> : null}
-            <p className="mt-sm text-[13px] font-semibold uppercase tracking-[0.25em]">Fee Voucher</p>
-          </div>
-
-          {/* PAID stamp — plain black outline */}
-          {paid && (
-            <span className="pointer-events-none absolute right-[40px] top-[128px] -rotate-[12deg] border-[3px] border-black px-md py-[2px] text-[30px] font-black tracking-widest">PAID</span>
-          )}
-
-          {/* meta */}
-          <div className="mt-md grid grid-cols-2 gap-x-lg gap-y-[2px] text-[12px]">
-            <div className="flex justify-between border-b border-black/40 py-[3px]"><span>Voucher No</span><span className="font-mono-data font-semibold">{voucher.voucherNo}</span></div>
-            <div className="flex justify-between border-b border-black/40 py-[3px]"><span>Billing Month</span><span>{voucher.billingMonth || "—"}</span></div>
-            <div className="flex justify-between border-b border-black/40 py-[3px]"><span>Student</span><span className="font-medium">{voucher.studentName}</span></div>
-            <div className="flex justify-between border-b border-black/40 py-[3px]"><span>Roll No</span><span className="font-mono-data">{voucher.studentRegistryId}</span></div>
-            <div className="flex justify-between border-b border-black/40 py-[3px]"><span>Generated</span><span>{fmtDate(voucher.generateDate) || "—"}</span></div>
-            <div className="flex justify-between border-b border-black/40 py-[3px]"><span>Due Date</span><span className="font-semibold">{fmtDate(voucher.dueDate) || "—"}</span></div>
-            {voucher.expiryDate ? <div className="flex justify-between border-b border-black/40 py-[3px]"><span>Valid Till</span><span>{fmtDate(voucher.expiryDate)}</span></div> : null}
-          </div>
-
-          {/* items */}
+        {paid && !condensed && (
+          <span className="pointer-events-none absolute right-[40px] top-[128px] -rotate-[12deg] border-[3px] border-black px-md py-[2px] text-[30px] font-black tracking-widest">PAID</span>
+        )}
+        <div className={`grid grid-cols-2 gap-x-lg gap-y-[2px] ${condensed ? "mt-xs text-[11px]" : "mt-md text-[12px]"}`}>
+          <div className="flex justify-between border-b border-black/40 py-[2px]"><span>Voucher No</span><span className="font-mono-data font-semibold">{voucher.voucherNo}</span></div>
+          <div className="flex justify-between border-b border-black/40 py-[2px]"><span>Billing Month</span><span>{voucher.billingMonth || "—"}</span></div>
+          <div className="flex justify-between border-b border-black/40 py-[2px]"><span>Student</span><span className="font-medium">{voucher.studentName}</span></div>
+          <div className="flex justify-between border-b border-black/40 py-[2px]"><span>Roll No</span><span className="font-mono-data">{voucher.studentRegistryId}</span></div>
+          <div className="flex justify-between border-b border-black/40 py-[2px]"><span>Due Date</span><span className="font-semibold">{fmtDate(voucher.dueDate) || "—"}</span></div>
+          {voucher.expiryDate ? <div className="flex justify-between border-b border-black/40 py-[2px]"><span>Valid Till</span><span>{fmtDate(voucher.expiryDate)}</span></div> : <div />}
+        </div>
+        {!condensed && (
           <table className="mt-lg w-full border-collapse text-left text-[13px]">
             <thead>
               <tr className="border-y-2 border-black text-[11px] uppercase tracking-wide">
-                <th className="py-[6px] font-semibold">Description</th>
-                <th className="py-[6px] text-right font-semibold">Amount</th>
+                <th className="py-[6px] font-semibold">Description</th><th className="py-[6px] text-right font-semibold">Amount</th>
               </tr>
             </thead>
             <tbody>
@@ -558,18 +569,43 @@ function VoucherPrint({ voucher, profile, onClose }: { voucher: Voucher; profile
               )}
             </tbody>
           </table>
+        )}
+        <div className={`flex items-center justify-between border-2 border-black px-md ${condensed ? "mt-xs py-[4px]" : "mt-sm py-sm"}`}>
+          <span className={`font-bold uppercase tracking-wide ${condensed ? "text-[12px]" : "text-[13px]"}`}>Amount Payable</span>
+          <span className={`font-mono-data font-bold ${condensed ? "text-[16px]" : "text-[20px]"}`}>{rs(remaining > 0 ? remaining : 0)}</span>
+        </div>
+        {!condensed && <p className="mt-lg text-[12px] italic">{profile?.voucherFooter || "Please pay before the due date to avoid a late fee."}</p>}
+        <div className={`grid grid-cols-2 gap-xl ${condensed ? "mt-md" : "mt-xl"}`}>
+          <div className="border-t border-black pt-xs text-center text-[11px] uppercase tracking-wide">Accounts Signature</div>
+          <div className="border-t border-black pt-xs text-center text-[11px] uppercase tracking-wide">Received By / Bank Stamp</div>
+        </div>
+      </div>
+    );
+  }
 
-          {/* amount payable */}
-          <div className="mt-sm flex items-center justify-between border-2 border-black px-md py-sm">
-            <span className="text-[13px] font-bold uppercase tracking-wide">Amount Payable</span>
-            <span className="font-mono-data text-[20px] font-bold">{rs(remaining > 0 ? remaining : 0)}</span>
+  return (
+    <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-auto bg-black/50 p-lg print:static print:bg-white print:p-0">
+      <div className="w-full max-w-[720px]">
+        <div className="mb-md flex items-center justify-end gap-sm no-print">
+          <div className="mr-auto flex gap-xs rounded-lg bg-surface-container p-[3px]">
+            {([[1, "1 copy"], [3, "Bank challan (3)"]] as const).map(([n, lbl]) => (
+              <button key={n} onClick={() => setCopies(n)} className={`rounded-md px-md py-[6px] font-label-md text-label-md font-semibold ${copies === n ? "bg-surface text-primary shadow-sm" : "text-on-surface-variant"}`}>{lbl}</button>
+            ))}
           </div>
+          <button onClick={() => window.print()} className="flex items-center gap-xs rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90">
+            <span className="material-symbols-outlined text-[18px]">print</span> Print
+          </button>
+          <button onClick={onClose} className="rounded-lg border border-outline-variant bg-surface-container-lowest px-md py-sm font-label-md text-label-md text-on-surface hover:bg-surface-container-high">Close</button>
+        </div>
 
-          <p className="mt-lg text-[12px] italic">{profile?.voucherFooter || "Please pay before the due date to avoid a late fee."}</p>
-          <div className="mt-xl grid grid-cols-2 gap-xl">
-            <div className="border-t border-black pt-xs text-center text-[11px] uppercase tracking-wide">Accounts Signature</div>
-            <div className="border-t border-black pt-xs text-center text-[11px] uppercase tracking-wide">Received By / Bank Stamp</div>
-          </div>
+        {/* Official black-and-white fee voucher (single or 3-copy bank challan) */}
+        <div className="print-area border border-black bg-white text-black">
+          {labels.map((label, i) => (
+            <div key={i} className={i > 0 ? "border-t-2 border-dashed border-black" : ""}>
+              {copies === 3 && i > 0 && <p className="px-xl pt-[2px] text-center text-[9px] uppercase tracking-widest text-black/50">— cut here —</p>}
+              {copy(label, copies === 3)}
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -582,10 +618,20 @@ function ReceiptWindow({ voucher, payment, profile, onClose }: { voucher: Vouche
   const line2 = [profile?.address, profile?.city].filter(Boolean).join(", ");
   const balance = Math.max(0, voucher.amount - voucher.paidAmount);
   const settled = balance <= 0;
+  function sendReceipt() {
+    const msg = `Assalam-o-Alaikum. ${name}: received Rs ${Number(payment.amount).toLocaleString("en-PK")} for ${voucher.studentName} (Voucher ${voucher.voucherNo}) on ${fmtDate(payment.paidAt)}. `
+      + (settled ? "Paid in full. Shukriya." : `Remaining balance: Rs ${balance.toLocaleString("en-PK")}. Shukriya.`);
+    const link = waLink(voucher.studentPhone, msg);
+    if (!link) { alert(`No valid WhatsApp number on file for ${voucher.studentName}.`); return; }
+    window.open(link, "_blank", "noopener");
+  }
   return (
     <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-auto bg-black/50 p-lg backdrop-blur-sm print:static print:bg-white print:p-0 print:backdrop-blur-none">
       <div className="w-full max-w-[540px]">
         <div className="mb-md flex items-center justify-end gap-sm no-print">
+          <button onClick={sendReceipt} disabled={!voucher.studentPhone} className="flex items-center gap-xs rounded-lg border border-emerald-300 px-md py-sm font-label-md text-label-md font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-40" title={voucher.studentPhone ? "Send receipt on WhatsApp" : "No phone number on file"}>
+            <span className="material-symbols-outlined text-[18px]">chat</span> WhatsApp
+          </button>
           <button onClick={() => window.print()} className="flex items-center gap-xs rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90">
             <span className="material-symbols-outlined text-[18px]">print</span> Print Receipt
           </button>

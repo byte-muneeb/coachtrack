@@ -5,8 +5,10 @@ import { scope } from "../tenant";
 
 const router = Router();
 
-// Reminders configuration is entity-admin only (per the permission matrix).
-router.use(requireRole("entity_admin"));
+// Reminder CONFIG (rules, template edits, queue) is entity-admin only. The
+// template READ is open to any scoped user so front desk / accountants can
+// generate the WhatsApp reminder message when collecting fees.
+const adminOnly = requireRole("entity_admin");
 
 const DEFAULT_TEMPLATE =
   "Dear Parent, this is a reminder that {StudentName}'s fee of Rs {Amount} is due on {DueDate}. Please pay on time to avoid interruption. - CoachTrack";
@@ -19,7 +21,7 @@ function str(v: unknown): string | null {
 function intOr0(v: unknown): number { const n = parseInt(String(v), 10); return isNaN(n) ? 0 : n; }
 
 // ---- Rules (entity-level) ----
-router.get("/rules", async (req, res, next) => {
+router.get("/rules", adminOnly, async (req, res, next) => {
   try {
     const pool = await getPool();
     const s = scope((req as AuthedRequest).ctx);
@@ -29,7 +31,7 @@ router.get("/rules", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post("/rules", async (req, res, next) => {
+router.post("/rules", adminOnly, async (req, res, next) => {
   try {
     const pool = await getPool();
     const ctx = (req as AuthedRequest).ctx!;
@@ -48,7 +50,7 @@ router.post("/rules", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.put("/rules/:id", async (req, res, next) => {
+router.put("/rules/:id", adminOnly, async (req, res, next) => {
   try {
     const pool = await getPool();
     const s = scope((req as AuthedRequest).ctx);
@@ -73,7 +75,7 @@ router.put("/rules/:id", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.delete("/rules/:id", async (req, res, next) => {
+router.delete("/rules/:id", adminOnly, async (req, res, next) => {
   try {
     const pool = await getPool();
     const s = scope((req as AuthedRequest).ctx);
@@ -108,7 +110,7 @@ router.get("/settings", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.put("/settings", async (req, res, next) => {
+router.put("/settings", adminOnly, async (req, res, next) => {
   try {
     const pool = await getPool();
     const ent = (req as AuthedRequest).ctx!.entityId;
@@ -121,7 +123,7 @@ router.put("/settings", async (req, res, next) => {
 
 // ---- Live queue preview (computed from active rules + unpaid vouchers) ----
 // Note: no messages are actually sent yet — WhatsApp/SMS integration is a later phase.
-router.get("/queue", async (req, res, next) => {
+router.get("/queue", adminOnly, async (req, res, next) => {
   try {
     const pool = await getPool();
     const s = scope((req as AuthedRequest).ctx, { entityCol: "v.entityId", branchCol: "v.branchId" });
