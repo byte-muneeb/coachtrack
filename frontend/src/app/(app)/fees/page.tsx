@@ -60,7 +60,12 @@ export default function FeesPage() {
 
   const setF = (k: keyof FeeForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm((p) => ({ ...p, [k]: e.target.value }));
-  const pg = usePagination(fees, 15);
+  const [q, setQ] = useState("");
+  const ql = q.trim().toLowerCase();
+  const feesFiltered = fees.filter((f) => !ql || `${f.name} ${f.category || ""} ${f.frequency || ""}`.toLowerCase().includes(ql));
+  const coursesFiltered = courses.filter((c) => !ql || `${c.name} ${c.code || ""}`.toLowerCase().includes(ql));
+  const pg = usePagination(feesFiltered, 15);
+  const pgC = usePagination(coursesFiltered, 15);
 
   return (
     <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
@@ -75,6 +80,12 @@ export default function FeesPage() {
             </button>
           }
         />
+
+        <label className="flex max-w-[480px] items-center gap-xs rounded-xl border border-outline-variant bg-surface-container-lowest px-md py-sm">
+          <span className="material-symbols-outlined text-[20px] text-on-surface-variant">search</span>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search fee components and course fees…"
+            className="w-full bg-transparent font-body-md text-body-md outline-none placeholder:text-on-surface-variant/70" />
+        </label>
 
         <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
           <table className="w-full text-left">
@@ -93,8 +104,8 @@ export default function FeesPage() {
                 <tr><td colSpan={6} className="px-md py-xl text-center text-on-surface-variant font-body-md">Loading…</td></tr>
               ) : error ? (
                 <tr><td colSpan={6} className="px-md py-xl text-center text-error font-body-md">{error} — is the backend running on :4000?</td></tr>
-              ) : fees.length === 0 ? (
-                <tr><td colSpan={6} className="px-md py-xl text-center text-on-surface-variant font-body-md">No fee components yet. Click “New Fee”.</td></tr>
+              ) : feesFiltered.length === 0 ? (
+                <tr><td colSpan={6} className="px-md py-xl text-center text-on-surface-variant font-body-md">{fees.length === 0 ? "No fee components yet. Click “New Fee”." : "No fee components match your search."}</td></tr>
               ) : pg.pageItems.map((f) => (
                 <tr key={f.id} className="hover:bg-secondary/5">
                   <td className="px-md py-sm font-body-md text-body-md text-on-surface">{f.name}</td>
@@ -138,9 +149,9 @@ export default function FeesPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-outline-variant">
-              {courses.length === 0 ? (
-                <tr><td colSpan={5} className="px-md py-lg text-center text-on-surface-variant font-body-md">No courses yet. Add courses (with fees) in the Courses module.</td></tr>
-              ) : courses.map((c) => (
+              {coursesFiltered.length === 0 ? (
+                <tr><td colSpan={5} className="px-md py-lg text-center text-on-surface-variant font-body-md">{courses.length === 0 ? "No courses yet. Add courses (with fees) in the Courses module." : "No courses match your search."}</td></tr>
+              ) : pgC.pageItems.map((c) => (
                 <tr key={c.id} className="hover:bg-secondary/5">
                   <td className="px-md py-sm font-body-md text-body-md text-on-surface">{c.name}<div className="font-label-md text-label-md text-on-surface-variant">{c.code || ""}</div></td>
                   <td className="px-md py-sm font-mono-data text-mono-data">{rs(c.admissionFee)}</td>
@@ -153,6 +164,11 @@ export default function FeesPage() {
               ))}
             </tbody>
           </table>
+          {coursesFiltered.length > 0 && (
+            <div className="border-t border-outline-variant px-md py-sm">
+              <Pagination page={pgC.page} totalPages={pgC.totalPages} setPage={pgC.setPage} total={pgC.total} rangeStart={pgC.rangeStart} rangeEnd={pgC.rangeEnd} unit="courses" />
+            </div>
+          )}
           <p className="border-t border-outline-variant px-md py-sm font-label-md text-label-md text-on-surface-variant">
             Note: monthly fees are billed per <strong>batch</strong> — a course’s batches can each set their own monthly fee, which drives voucher generation.
           </p>
