@@ -23,7 +23,7 @@ export default function AuditPage() {
   }, []);
 
   return (
-    <main className="ml-[280px] pt-16 min-h-screen p-lg">
+    <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
       <div className="mx-auto max-w-[1100px] space-y-lg">
         <PageHeader title="Audit Log" subtitle="Recent activity — who did what, and when." icon="history" />
 

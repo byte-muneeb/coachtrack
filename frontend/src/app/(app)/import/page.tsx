@@ -144,7 +144,7 @@ export default function ImportPage() {
   }, []);
 
   if (!allowed) {
-    return <main className="ml-[280px] p-margin-desktop pt-24"><p className="text-on-surface-variant">You don&apos;t have access to data import.</p></main>;
+    return <main className="md:ml-[280px] p-margin-desktop pt-24"><p className="text-on-surface-variant">You don&apos;t have access to data import.</p></main>;
   }
 
   const guardBranch = (fn: (rows: ImportRow[], validateOnly: boolean, branchId: number) => Promise<ImportResult>) =>
@@ -154,7 +154,7 @@ export default function ImportPage() {
     };
 
   return (
-    <main className="ml-[280px] min-h-screen p-margin-desktop pt-24">
+    <main className="md:ml-[280px] min-h-screen p-margin-desktop pt-24">
       <div className="mx-auto max-w-[860px]">
         <h1 className="font-headline-md text-headline-md font-semibold text-on-surface">Import Data</h1>
         <p className="mt-xs font-body-md text-body-md text-on-surface-variant">

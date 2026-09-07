@@ -70,7 +70,7 @@ export default function AdmissionsPage() {
   const setF = (k: keyof IForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((p) => ({ ...p, [k]: e.target.value }));
 
   return (
-    <main className="ml-[280px] pt-16 min-h-screen p-lg">
+    <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
       <div className="mx-auto max-w-[1240px] space-y-lg">
         <PageHeader
           title="Inquiries"

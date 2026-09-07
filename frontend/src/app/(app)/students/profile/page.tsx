@@ -1,7 +1,7 @@
 // Auto-generated from the Stitch design. Faithful static render; interactivity/data is wired in the DB phase.
 export default function Page() {
   return (
-    <div dangerouslySetInnerHTML={{ __html: `<main class="ml-[280px] min-h-screen">
+    <div dangerouslySetInnerHTML={{ __html: `<main class="md:ml-[280px] min-h-screen">
 <!-- TopNavBar (Shared Component Shell Logic) -->
 <header class="fixed top-0 right-0 w-[calc(100%-280px)] h-16 bg-surface border-b border-outline-variant flex justify-between items-center px-margin-desktop z-40">
 <div class="flex items-center flex-1 max-w-xl">

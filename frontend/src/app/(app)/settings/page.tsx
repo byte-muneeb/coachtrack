@@ -49,7 +49,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className="ml-[280px] pt-16 min-h-screen p-lg">
+    <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
       <div className="mx-auto max-w-[960px] space-y-lg">
         <PageHeader title="Settings" subtitle="Institute profile, preferences, and voucher branding." icon="settings" />
 

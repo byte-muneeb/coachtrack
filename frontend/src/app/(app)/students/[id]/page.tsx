@@ -137,17 +137,17 @@ export default function StudentProfilePage() {
   const addBatchOptions = addCourseId ? batchesByCourse[addCourseId] : undefined;
 
   if (loading)
-    return <main className="ml-[280px] pt-16 p-lg font-body-md text-on-surface-variant">Loading…</main>;
+    return <main className="md:ml-[280px] pt-16 p-lg font-body-md text-on-surface-variant">Loading…</main>;
   if (error || !student)
     return (
-      <main className="ml-[280px] pt-16 p-lg">
+      <main className="md:ml-[280px] pt-16 p-lg">
         <p className="font-body-md text-error">{error || "Student not found"}</p>
         <Link href="/students" className="mt-md inline-block text-secondary underline">← Back to registry</Link>
       </main>
     );
 
   return (
-    <main className="ml-[280px] pt-16 min-h-screen p-lg">
+    <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
       <div className="mx-auto max-w-[1100px] space-y-lg">
         {/* Header */}
         <div className="flex items-center justify-between">

@@ -1,0 +1,3 @@
+# CoachTrack Pro is a login-gated management app — keep it out of search indexes.
+User-agent: *
+Disallow: /

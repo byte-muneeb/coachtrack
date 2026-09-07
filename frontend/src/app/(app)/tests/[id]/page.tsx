@@ -150,11 +150,11 @@ export default function TestDetailPage() {
   const chip = "rounded-md px-sm py-[3px] font-label-md text-label-md font-semibold";
   const colSpan = 7 + subjects.length + (courseWide ? 1 : 0);
 
-  if (loading) return <main className="ml-[280px] pt-16 min-h-screen p-lg"><p className="text-on-surface-variant">Loading…</p></main>;
-  if (!test) return <main className="ml-[280px] pt-16 min-h-screen p-lg"><p className="text-on-surface-variant">{error || "Test not found."}</p><Link href="/tests" className="text-secondary hover:underline">← Back to tests</Link></main>;
+  if (loading) return <main className="md:ml-[280px] pt-16 min-h-screen p-lg"><p className="text-on-surface-variant">Loading…</p></main>;
+  if (!test) return <main className="md:ml-[280px] pt-16 min-h-screen p-lg"><p className="text-on-surface-variant">{error || "Test not found."}</p><Link href="/tests" className="text-secondary hover:underline">← Back to tests</Link></main>;
 
   return (
-    <main className="ml-[280px] pt-16 min-h-screen p-lg">
+    <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
       <div className="mx-auto max-w-[1100px] space-y-lg">
         <PageHeader
           title={test.name}

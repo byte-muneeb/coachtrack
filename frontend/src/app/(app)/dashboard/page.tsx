@@ -39,7 +39,7 @@ export default function DashboardPage() {
   const maxTrend = d ? Math.max(1, ...d.monthlyTrend.map((m) => m.collected)) : 1;
 
   return (
-    <main className="ml-[280px] pt-16 min-h-screen p-lg">
+    <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
       <div className="mx-auto max-w-[1440px] space-y-lg">
         <PageHeader
           title="Executive Overview"

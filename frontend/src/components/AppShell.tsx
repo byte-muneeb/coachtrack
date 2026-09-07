@@ -54,6 +54,7 @@ function Dropdown({
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() || "/";
   const [menu, setMenu] = useState<null | "notif" | "help" | "profile">(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
   const [notifs, setNotifs] = useState<Notif[]>([]);
   const [notifLoaded, setNotifLoaded] = useState(false);
   const [user, setUser] = useState<{ username: string; fullName: string | null; role: string; impersonatorId?: number; entityId?: number | null } | null>(null);
@@ -86,8 +87,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     .map((g) => ({ ...g, items: g.items.filter((it) => role === "entity_admin" || !ENTITY_ADMIN_ONLY.has(it.href)) }))
     .filter((g) => g.items.length > 0);
 
-  // Close any menu when route changes.
-  useEffect(() => setMenu(null), [pathname]);
+  // Close any menu + the mobile drawer when the route changes.
+  useEffect(() => { setMenu(null); setSidebarOpen(false); }, [pathname]);
 
   // Escape closes menus.
   useEffect(() => {
@@ -117,8 +118,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background text-on-surface">
-      {/* ---------- Sidebar ---------- */}
-      <aside className="fixed left-0 top-0 z-50 flex h-full w-[280px] flex-col border-r border-white/5 bg-gradient-to-b from-[#0d1a33] to-[#081120] text-on-primary">
+      {/* ---------- Mobile drawer backdrop ---------- */}
+      {sidebarOpen && (
+        <button aria-hidden tabIndex={-1} onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 z-40 cursor-default bg-black/50 md:hidden" />
+      )}
+
+      {/* ---------- Sidebar (fixed on desktop, slide-in drawer on mobile) ---------- */}
+      <aside className={`fixed left-0 top-0 z-50 flex h-full w-[280px] flex-col border-r border-white/5 bg-gradient-to-b from-[#0d1a33] to-[#081120] text-on-primary transition-transform duration-200 md:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}`}>
         <Link href="/dashboard" className="flex items-center gap-sm px-lg py-md">
           <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary text-white shadow-[0_4px_12px_rgba(33,112,228,0.35)]">
             <span className="material-symbols-outlined text-[22px]">school</span>
@@ -187,8 +194,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* ---------- Topbar ---------- */}
-      <header className="fixed right-0 top-0 z-40 flex h-16 w-[calc(100%-280px)] items-center justify-between border-b border-outline-variant bg-surface/85 px-margin-desktop backdrop-blur-md shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
+      <header className="fixed right-0 top-0 z-40 flex h-16 w-full items-center justify-between border-b border-outline-variant bg-surface/85 px-md md:px-margin-desktop md:w-[calc(100%-280px)] backdrop-blur-md shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
         <div className="flex min-w-0 items-center gap-md">
+          <button onClick={() => setSidebarOpen(true)} aria-label="Open menu"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-on-surface-variant hover:bg-surface-container md:hidden">
+            <span className="material-symbols-outlined">menu</span>
+          </button>
           <div className="min-w-0">
             <p className="truncate font-body-md text-body-md font-semibold text-on-surface">
               {impersonating ? "Super-admin view" : "Head Office"}

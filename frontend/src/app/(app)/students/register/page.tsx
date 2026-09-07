@@ -124,7 +124,7 @@ export default function RegisterPage() {
   }
 
   return (
-    <main className="ml-[280px] pt-16 min-h-screen p-lg">
+    <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
       <form onSubmit={onSubmit} className="mx-auto max-w-[960px] space-y-lg">
         <div className="flex items-end justify-between border-b border-outline-variant pb-md">
           <div>

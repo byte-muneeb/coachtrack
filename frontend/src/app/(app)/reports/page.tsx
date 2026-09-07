@@ -62,7 +62,7 @@ export default function ReportsPage() {
   const maxBilling = data ? Math.max(1, ...data.billingByCourse.map((b) => b.expected)) : 1;
 
   return (
-    <main className="ml-[280px] pt-16 min-h-screen p-lg">
+    <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
       <div className="mx-auto max-w-[1440px] space-y-lg">
         <PageHeader
           title="Financial & Academic Reports"

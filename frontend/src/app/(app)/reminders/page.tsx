@@ -54,7 +54,7 @@ export default function RemindersPage() {
   }
 
   return (
-    <main className="ml-[280px] pt-16 min-h-screen p-lg">
+    <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
       <div className="mx-auto max-w-[1240px] space-y-lg">
         <div className="flex items-end justify-between">
           <div>

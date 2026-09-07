@@ -145,7 +145,7 @@ export default function VouchersPage() {
   }
 
   return (
-    <main className="ml-[280px] pt-16 min-h-screen p-lg">
+    <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
       <div className="mx-auto max-w-[1440px] space-y-lg print:hidden">
         <PageHeader
           title="Vouchers & Collections"

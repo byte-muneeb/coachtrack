@@ -75,7 +75,7 @@ export default function UsersPage() {
   }
 
   return (
-    <main className="ml-[280px] pt-16 min-h-screen p-lg">
+    <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
       <div className="mx-auto max-w-[1000px] space-y-lg">
         <PageHeader
           title="Users & Roles"
