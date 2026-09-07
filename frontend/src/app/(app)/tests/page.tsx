@@ -126,7 +126,7 @@ function CreateTest({ courses, onClose, onCreated }: { courses: Course[]; onClos
   const [passingMarks, setPassingMarks] = useState("");
   const [mode, setMode] = useState<"single" | "subjects">("single");
   const [totalMarks, setTotalMarks] = useState("");
-  const [subjects, setSubjects] = useState<{ name: string; maxMarks: string }[]>([{ name: "", maxMarks: "" }]);
+  const [subjects, setSubjects] = useState<{ name: string; maxMarks: string; passingMarks: string }[]>([{ name: "", maxMarks: "", passingMarks: "" }]);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -142,7 +142,7 @@ function CreateTest({ courses, onClose, onCreated }: { courses: Course[]; onClos
     e.preventDefault();
     if (!name.trim()) { setErr("Test name is required"); return; }
     if (!courseId) { setErr("Choose a course"); return; }
-    const subj = subjects.map((s) => ({ name: s.name.trim(), maxMarks: Number(s.maxMarks) || 0 })).filter((s) => s.name);
+    const subj = subjects.map((s) => ({ name: s.name.trim(), maxMarks: Number(s.maxMarks) || 0, passingMarks: Number(s.passingMarks) || 0 })).filter((s) => s.name);
     if (mode === "subjects" && !subj.length) { setErr("Add at least one subject"); return; }
     if (mode === "single" && !(Number(totalMarks) > 0)) { setErr("Total marks must be greater than 0"); return; }
     setSaving(true); setErr(null);
@@ -197,13 +197,17 @@ function CreateTest({ courses, onClose, onCreated }: { courses: Course[]; onClos
         ) : (
           <div className="space-y-sm">
             <div className="flex items-center justify-between">
-              <span className="font-label-md text-label-md text-on-surface-variant">Subjects (total {subjectTotal})</span>
-              <button type="button" onClick={() => setSubjects((p) => [...p, { name: "", maxMarks: "" }])} className="flex items-center gap-xs font-label-md text-label-md text-secondary hover:underline"><span className="material-symbols-outlined text-[16px]">add</span> Add subject</button>
+              <span className="font-label-md text-label-md text-on-surface-variant">Subjects (total {subjectTotal}) — a student who fails any subject fails overall</span>
+              <button type="button" onClick={() => setSubjects((p) => [...p, { name: "", maxMarks: "", passingMarks: "" }])} className="flex items-center gap-xs font-label-md text-label-md text-secondary hover:underline"><span className="material-symbols-outlined text-[16px]">add</span> Add subject</button>
+            </div>
+            <div className="flex items-center gap-sm font-label-md text-label-md text-on-surface-variant">
+              <span className="flex-1">Subject</span><span className="w-[110px] text-right">Max</span><span className="w-[110px] text-right">Passing</span><span className="w-8" />
             </div>
             {subjects.map((s, i) => (
               <div key={i} className="flex items-center gap-sm">
                 <input className={inputCls} placeholder="Biology" value={s.name} onChange={(e) => setSubjects((p) => p.map((x, j) => j === i ? { ...x, name: e.target.value } : x))} />
-                <input type="number" min={0} className="w-[120px] rounded-lg border border-outline-variant bg-surface px-md py-sm font-body-md text-body-md outline-none focus:border-secondary" placeholder="Max" value={s.maxMarks} onChange={(e) => setSubjects((p) => p.map((x, j) => j === i ? { ...x, maxMarks: e.target.value } : x))} />
+                <input type="number" min={0} className="w-[110px] rounded-lg border border-outline-variant bg-surface px-md py-sm text-right font-body-md text-body-md outline-none focus:border-secondary" placeholder="Max" value={s.maxMarks} onChange={(e) => setSubjects((p) => p.map((x, j) => j === i ? { ...x, maxMarks: e.target.value } : x))} />
+                <input type="number" min={0} className="w-[110px] rounded-lg border border-outline-variant bg-surface px-md py-sm text-right font-body-md text-body-md outline-none focus:border-secondary" placeholder="Pass" value={s.passingMarks} onChange={(e) => setSubjects((p) => p.map((x, j) => j === i ? { ...x, passingMarks: e.target.value } : x))} />
                 {subjects.length > 1 && <button type="button" onClick={() => setSubjects((p) => p.filter((_, j) => j !== i))} className="flex h-8 w-8 items-center justify-center rounded-md text-error hover:bg-error-container"><span className="material-symbols-outlined text-[18px]">close</span></button>}
               </div>
             ))}

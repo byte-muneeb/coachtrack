@@ -10,17 +10,24 @@ const canWrite = requireRole("entity_admin", "branch_manager", "teacher");
 
 function num(v: unknown, def = 0): number { const n = Number(v); return isNaN(n) ? def : n; }
 
+// Default grade bands by percentage. A failed result is always "F".
+const GRADE_BANDS: [number, string][] = [[80, "A+"], [70, "A"], [60, "B"], [50, "C"], [40, "D"]];
+function gradeFor(pct: number | null, passed: boolean | null): string | null {
+  if (pct == null || passed == null) return null;
+  if (!passed) return "F";
+  for (const [min, g] of GRADE_BANDS) if (pct >= min) return g;
+  return "F";
+}
+
 // Standard competition ranking (1224) over obtained marks, absentees excluded.
-function assignRanks<T extends { obtainedMarks: number | null; absent: boolean }>(rows: T[]): (T & { rank: number | null })[] {
-  const ranked = rows.map((r) => ({ ...r, rank: null as number | null }));
-  const scored = ranked.filter((r) => !r.absent && r.obtainedMarks != null)
+function competitionRank<T extends { obtainedMarks: number | null; absent: boolean }>(rows: T[], set: (r: T, rank: number) => void): void {
+  const scored = rows.filter((r) => !r.absent && r.obtainedMarks != null)
     .sort((a, b) => (b.obtainedMarks as number) - (a.obtainedMarks as number));
   let lastMark: number | null = null, lastRank = 0;
   scored.forEach((r, i) => {
     if (lastMark === null || r.obtainedMarks !== lastMark) { lastRank = i + 1; lastMark = r.obtainedMarks; }
-    r.rank = lastRank;
+    set(r, lastRank);
   });
-  return ranked;
 }
 
 // Fetch a test (in scope) plus its ordered subjects, or null.
@@ -32,7 +39,7 @@ async function loadTest(req: AuthedRequest, id: number) {
   const test = t.recordset[0];
   if (!test) return null;
   const subs = await pool.request().input("tid", sql.Int, id)
-    .query("SELECT id, name, maxMarks, position FROM dbo.TestSubjects WHERE testId=@tid ORDER BY position, id");
+    .query("SELECT id, name, maxMarks, passingMarks, position FROM dbo.TestSubjects WHERE testId=@tid ORDER BY position, id");
   return { ...test, subjects: subs.recordset };
 }
 
@@ -97,13 +104,17 @@ router.post("/", canWrite, async (req, res, next) => {
       if (!br.recordset[0]) return res.status(400).json({ error: "Batch does not belong to that course" });
     }
 
-    const subjects: { name: string; maxMarks: number }[] = Array.isArray(b.subjects)
-      ? b.subjects.map((x: { name?: unknown; maxMarks?: unknown }) => ({ name: trimStr(x.name) || "", maxMarks: num(x.maxMarks) }))
-        .filter((x: { name: string }) => x.name)
+    const subjects: { name: string; maxMarks: number; passingMarks: number }[] = Array.isArray(b.subjects)
+      ? b.subjects.map((x: { name?: unknown; maxMarks?: unknown; passingMarks?: unknown }) => {
+          const maxMarks = num(x.maxMarks);
+          return { name: trimStr(x.name) || "", maxMarks, passingMarks: Math.min(num(x.passingMarks), maxMarks) };
+        }).filter((x: { name: string }) => x.name)
       : [];
     const totalMarks = subjects.length ? subjects.reduce((a, x) => a + x.maxMarks, 0) : num(b.totalMarks);
     if (totalMarks <= 0) return res.status(400).json({ error: "Total marks must be greater than 0" });
-    const passingMarks = num(b.passingMarks);
+    // For subject-wise tests, the overall pass mark defaults to the sum of subject pass marks.
+    const passingMarks = b.passingMarks !== undefined ? num(b.passingMarks)
+      : (subjects.length ? subjects.reduce((a, x) => a + x.passingMarks, 0) : 0);
 
     const tx = new sql.Transaction(pool);
     await tx.begin();
@@ -120,8 +131,9 @@ router.post("/", canWrite, async (req, res, next) => {
       const testId = ins.recordset[0].id as number;
       for (let i = 0; i < subjects.length; i++) {
         await new sql.Request(tx).input("ent", sql.Int, ctx.entityId).input("tid", sql.Int, testId)
-          .input("name", sql.NVarChar, subjects[i].name).input("max", sql.Float, subjects[i].maxMarks).input("pos", sql.Int, i)
-          .query("INSERT INTO dbo.TestSubjects (entityId, testId, name, maxMarks, position) VALUES (@ent,@tid,@name,@max,@pos)");
+          .input("name", sql.NVarChar, subjects[i].name).input("max", sql.Float, subjects[i].maxMarks)
+          .input("pass", sql.Float, subjects[i].passingMarks).input("pos", sql.Int, i)
+          .query("INSERT INTO dbo.TestSubjects (entityId, testId, name, maxMarks, passingMarks, position) VALUES (@ent,@tid,@name,@max,@pass,@pos)");
       }
       await tx.commit();
       const test = await loadTest(req as AuthedRequest, testId);
@@ -155,11 +167,15 @@ router.put("/:id", canWrite, async (req, res, next) => {
     try {
       if (wantsSubjectEdit) {
         await new sql.Request(tx).input("tid", sql.Int, id).query("DELETE FROM dbo.TestSubjects WHERE testId=@tid");
-        const subjects = b.subjects.map((x: { name?: unknown; maxMarks?: unknown }) => ({ name: trimStr(x.name) || "", maxMarks: num(x.maxMarks) })).filter((x: { name: string }) => x.name);
+        const subjects = b.subjects.map((x: { name?: unknown; maxMarks?: unknown; passingMarks?: unknown }) => {
+          const maxMarks = num(x.maxMarks);
+          return { name: trimStr(x.name) || "", maxMarks, passingMarks: Math.min(num(x.passingMarks), maxMarks) };
+        }).filter((x: { name: string }) => x.name);
         for (let i = 0; i < subjects.length; i++) {
           await new sql.Request(tx).input("ent", sql.Int, ctx.entityId).input("tid", sql.Int, id)
-            .input("name", sql.NVarChar, subjects[i].name).input("max", sql.Float, subjects[i].maxMarks).input("pos", sql.Int, i)
-            .query("INSERT INTO dbo.TestSubjects (entityId, testId, name, maxMarks, position) VALUES (@ent,@tid,@name,@max,@pos)");
+            .input("name", sql.NVarChar, subjects[i].name).input("max", sql.Float, subjects[i].maxMarks)
+            .input("pass", sql.Float, subjects[i].passingMarks).input("pos", sql.Int, i)
+            .query("INSERT INTO dbo.TestSubjects (entityId, testId, name, maxMarks, passingMarks, position) VALUES (@ent,@tid,@name,@max,@pass,@pos)");
         }
         if (subjects.length) totalMarks = subjects.reduce((a: number, x: { maxMarks: number }) => a + x.maxMarks, 0);
         else if (b.totalMarks !== undefined) totalMarks = num(b.totalMarks);
@@ -195,6 +211,23 @@ router.delete("/:id", canWrite, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// PATCH /api/tests/:id/publish  { published: boolean }
+// Publishing locks marks (edits are refused until unpublished) and marks results
+// as final for student/parent-facing views.
+router.patch("/:id/publish", canWrite, async (req, res, next) => {
+  try {
+    const pool = await getPool();
+    const s = scope((req as AuthedRequest).ctx);
+    const id = Number(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    const published = req.body?.published ? 1 : 0;
+    const r = await s.apply(pool.request()).input("id", sql.Int, id).input("p", sql.Bit, published)
+      .query(`UPDATE dbo.Tests SET published=@p, updatedAt=SYSUTCDATETIME() WHERE id=@id ${s.clause}`);
+    if (r.rowsAffected[0] === 0) return res.status(404).json({ error: "Test not found" });
+    res.json({ published: published === 1 });
+  } catch (e) { next(e); }
+});
+
 // GET /api/tests/:id/results — enrolled-student roster + marks + rank.
 router.get("/:id/results", async (req, res, next) => {
   try {
@@ -207,13 +240,14 @@ router.get("/:id/results", async (req, res, next) => {
     // Roster = active students enrolled in the test's course (and batch if set).
     const s = scope((req as AuthedRequest).ctx, { entityCol: "s.entityId", branchCol: "s.branchId" });
     const request = s.apply(pool.request()).input("cid", sql.Int, test.courseId);
-    let batchFilter = "";
-    if (test.batchId != null) { request.input("bid", sql.Int, test.batchId); batchFilter = "AND e.batchId = @bid"; }
+    let batchClause = "";
+    if (test.batchId != null) { request.input("bid", sql.Int, test.batchId); batchClause = "AND e.batchId = @bid"; }
     const roster = await request.query(`
-      SELECT DISTINCT s.id AS studentId, s.fullName AS studentName, s.registryId, s.branchId
+      SELECT s.id AS studentId, s.fullName AS studentName, s.registryId, s.branchId,
+        (SELECT MIN(e.batchId) FROM dbo.Enrollments e WHERE e.studentId = s.id AND e.status='active' AND e.courseId = @cid ${batchClause}) AS enrollBatchId
       FROM dbo.Students s
-      JOIN dbo.Enrollments e ON e.studentId = s.id AND e.status='active' AND e.courseId = @cid ${batchFilter}
       WHERE s.status='active' ${s.clause}
+        AND EXISTS (SELECT 1 FROM dbo.Enrollments e WHERE e.studentId = s.id AND e.status='active' AND e.courseId = @cid ${batchClause})
       ORDER BY s.fullName
     `);
     // Existing results + per-subject marks for this test.
@@ -229,26 +263,57 @@ router.get("/:id/results", async (req, res, next) => {
       marksByStudent.get(m.studentId)!.set(m.subjectId, m.obtainedMarks);
     }
 
-    const base = roster.recordset.map((r: { studentId: number; studentName: string; registryId: string; branchId: number }) => {
+    const testSubjects = test.subjects as { id: number; name: string; maxMarks: number; passingMarks: number }[];
+    const base = roster.recordset.map((r: { studentId: number; studentName: string; registryId: string; branchId: number; enrollBatchId: number | null }) => {
       const res = resById.get(r.studentId);
       const has = res !== undefined;
       const absent = has && res!.absent === 1;
       const obtainedMarks = has && !absent ? Number(res!.obtainedMarks) : null;
       const subjMap = marksByStudent.get(r.studentId);
-      const subjects = (test.subjects as { id: number; name: string; maxMarks: number }[]).map((su) => ({
-        subjectId: su.id, name: su.name, maxMarks: su.maxMarks,
-        obtainedMarks: subjMap && subjMap.has(su.id) ? Number(subjMap.get(su.id)) : null,
-      }));
+      const subjects = testSubjects.map((su) => {
+        const om = has && !absent && subjMap && subjMap.has(su.id) ? Number(subjMap.get(su.id)) : null;
+        // A subject with no pass mark set (0) has no bar to clear.
+        const passed = om == null ? null : (su.passingMarks <= 0 || om >= su.passingMarks);
+        return { subjectId: su.id, name: su.name, maxMarks: su.maxMarks, passingMarks: su.passingMarks, obtainedMarks: om, passed };
+      });
+      const failedSubjects = subjects.filter((x) => x.passed === false).map((x) => x.name);
+      const percentage = obtainedMarks != null && test.totalMarks > 0 ? Math.round((obtainedMarks / test.totalMarks) * 1000) / 10 : null;
+      // Overall pass requires clearing the total AND every subject that has a pass mark.
+      let passed: boolean | null;
+      if (!has) passed = null;
+      else if (absent) passed = false;
+      else passed = obtainedMarks! >= test.passingMarks && failedSubjects.length === 0;
       return {
         studentId: r.studentId, studentName: r.studentName, registryId: r.registryId, branchId: r.branchId,
-        recorded: has, absent, obtainedMarks,
-        percentage: obtainedMarks != null && test.totalMarks > 0 ? Math.round((obtainedMarks / test.totalMarks) * 1000) / 10 : null,
-        passed: obtainedMarks != null ? obtainedMarks >= test.passingMarks : null,
-        remarks: has ? res!.remarks : null,
+        enrollBatchId: r.enrollBatchId ?? null,
+        recorded: has, absent, obtainedMarks, percentage, passed,
+        grade: absent ? null : gradeFor(percentage, passed),
+        failedSubjects, remarks: has ? res!.remarks : null,
         subjects,
+        rank: null as number | null, batchRank: null as number | null,
       };
     });
-    res.json({ test, roster: assignRanks(base) });
+
+    // Overall rank across the roster + rank within each enrollment batch.
+    competitionRank(base, (r, rank) => { r.rank = rank; });
+    const byBatch = new Map<number, typeof base>();
+    for (const r of base) { const k = r.enrollBatchId ?? 0; if (!byBatch.has(k)) byBatch.set(k, []); byBatch.get(k)!.push(r); }
+    for (const grp of byBatch.values()) competitionRank(grp, (r, rank) => { r.batchRank = rank; });
+
+    // Class statistics (recorded, non-absent only).
+    const scored = base.filter((r) => !r.absent && r.obtainedMarks != null);
+    const avg = (vals: number[]) => vals.length ? Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10 : null;
+    const totals = scored.map((r) => r.obtainedMarks!) as number[];
+    const stats = {
+      count: scored.length,
+      passCount: scored.filter((r) => r.passed).length,
+      overall: totals.length ? { high: Math.max(...totals), low: Math.min(...totals), avg: avg(totals) } : null,
+      perSubject: testSubjects.map((su) => {
+        const vals = scored.map((r) => r.subjects.find((x) => x.subjectId === su.id)?.obtainedMarks).filter((v): v is number => v != null);
+        return { subjectId: su.id, name: su.name, high: vals.length ? Math.max(...vals) : null, low: vals.length ? Math.min(...vals) : null, avg: avg(vals) };
+      }),
+    };
+    res.json({ test, roster: base, stats });
   } catch (e) { next(e); }
 });
 
@@ -263,6 +328,7 @@ router.post("/:id/results", canWrite, async (req, res, next) => {
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
     const test = await loadTest(req as AuthedRequest, id);
     if (!test) return res.status(404).json({ error: "Test not found" });
+    if (test.published) return res.status(409).json({ error: "Results are published and locked. Unpublish the test to edit marks." });
     const hasSubjects = (test.subjects as unknown[]).length > 0;
     const subjMax = new Map((test.subjects as { id: number; maxMarks: number }[]).map((x) => [x.id, x.maxMarks]));
     const marks: { studentId: number; absent?: boolean; remarks?: string; total?: number; subjects?: { subjectId: number; marks: number }[] }[] =
@@ -335,7 +401,7 @@ router.get("/student/:studentId", async (req, res, next) => {
     const id = Number(req.params.studentId);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
     const r = await s.apply(pool.request()).input("sid", sql.Int, id).query(`
-      SELECT t.id AS testId, t.name, t.testDate, t.totalMarks, t.passingMarks, c.name AS courseName,
+      SELECT t.id AS testId, t.name, t.testDate, t.totalMarks, t.passingMarks, t.published, c.name AS courseName,
              r.obtainedMarks, r.absent, r.remarks
       FROM dbo.TestResults r
       JOIN dbo.Tests t ON t.id = r.testId
@@ -343,12 +409,27 @@ router.get("/student/:studentId", async (req, res, next) => {
       WHERE r.studentId = @sid ${s.clause}
       ORDER BY t.testDate DESC NULLS LAST, t.id DESC
     `);
-    const results = r.recordset.map((x: { obtainedMarks: number; absent: number; totalMarks: number; passingMarks: number }) => ({
-      ...x,
-      absent: x.absent === 1,
-      percentage: !x.absent && x.totalMarks > 0 ? Math.round((Number(x.obtainedMarks) / x.totalMarks) * 1000) / 10 : null,
-      passed: !x.absent ? Number(x.obtainedMarks) >= x.passingMarks : null,
-    }));
+    // Per-subject marks + pass marks for this student's tests → subject-level fail rule.
+    const failedByTest = new Map<number, string[]>();
+    if (r.recordset.length) {
+      const mm = await pool.request().input("sid", sql.Int, id).query(`
+        SELECT m.testId, ts.name, ts.passingMarks, m.obtainedMarks
+        FROM dbo.TestResultMarks m JOIN dbo.TestSubjects ts ON ts.id = m.subjectId
+        WHERE m.studentId = @sid`);
+      for (const row of mm.recordset as { testId: number; name: string; passingMarks: number; obtainedMarks: number }[]) {
+        if (row.passingMarks > 0 && Number(row.obtainedMarks) < row.passingMarks) {
+          if (!failedByTest.has(row.testId)) failedByTest.set(row.testId, []);
+          failedByTest.get(row.testId)!.push(row.name);
+        }
+      }
+    }
+    const results = r.recordset.map((x: { testId: number; obtainedMarks: number; absent: number; totalMarks: number; passingMarks: number; published: number }) => {
+      const absent = x.absent === 1;
+      const failedSubjects = failedByTest.get(x.testId) || [];
+      const percentage = !absent && x.totalMarks > 0 ? Math.round((Number(x.obtainedMarks) / x.totalMarks) * 1000) / 10 : null;
+      const passed = absent ? false : (Number(x.obtainedMarks) >= x.passingMarks && failedSubjects.length === 0);
+      return { ...x, published: x.published === 1, absent, percentage, passed: absent || x.obtainedMarks != null ? passed : null, grade: absent ? null : gradeFor(percentage, passed), failedSubjects };
+    });
     res.json(results);
   } catch (e) { next(e); }
 });
@@ -365,6 +446,7 @@ router.post("/:id/import", canWrite, async (req, res, next) => {
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
     const test = await loadTest(req as AuthedRequest, id);
     if (!test) return res.status(404).json({ error: "Test not found" });
+    if (test.published) return res.status(409).json({ error: "Results are published and locked. Unpublish the test to import marks." });
     const subjects = test.subjects as { id: number; name: string; maxMarks: number }[];
     const hasSubjects = subjects.length > 0;
 

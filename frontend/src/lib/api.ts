@@ -555,32 +555,39 @@ export const attendanceApi = {
   },
 };
 
-// ---- Tests & Results (B2) ----
-export type TestSubject = { id: number; name: string; maxMarks: number; position: number };
+// ---- Tests & Results (B2 + Phase T) ----
+export type TestSubject = { id: number; name: string; maxMarks: number; passingMarks: number; position: number };
 export type Test = {
   id: number; entityId: number; branchId: number; courseId: number; batchId: number | null;
-  name: string; testDate: string | null; totalMarks: number; passingMarks: number; status: string;
+  name: string; testDate: string | null; totalMarks: number; passingMarks: number; status: string; published: number;
   courseName?: string | null; batchName?: string | null; batchTimeSlot?: string | null;
   subjectCount?: number; resultCount?: number; subjects?: TestSubject[];
   createdAt?: string; updatedAt?: string;
 };
-export type TestRosterSubject = { subjectId: number; name: string; maxMarks: number; obtainedMarks: number | null };
+export type TestRosterSubject = { subjectId: number; name: string; maxMarks: number; passingMarks: number; obtainedMarks: number | null; passed: boolean | null };
 export type TestRosterRow = {
-  studentId: number; studentName: string; registryId: string; branchId: number;
+  studentId: number; studentName: string; registryId: string; branchId: number; enrollBatchId: number | null;
   recorded: boolean; absent: boolean; obtainedMarks: number | null;
-  percentage: number | null; passed: boolean | null; rank: number | null;
+  percentage: number | null; passed: boolean | null; grade: string | null; failedSubjects: string[];
+  rank: number | null; batchRank: number | null;
   remarks: string | null; subjects: TestRosterSubject[];
+};
+export type TestSubjectStat = { subjectId: number; name: string; high: number | null; low: number | null; avg: number | null };
+export type TestStats = {
+  count: number; passCount: number;
+  overall: { high: number; low: number; avg: number | null } | null;
+  perSubject: TestSubjectStat[];
 };
 export type StudentTestResult = {
   testId: number; name: string; testDate: string | null; totalMarks: number; passingMarks: number;
   courseName: string | null; obtainedMarks: number; absent: boolean; remarks: string | null;
-  percentage: number | null; passed: boolean | null;
+  percentage: number | null; passed: boolean | null; grade: string | null; failedSubjects: string[]; published: boolean;
 };
 export type TestMarkInput = {
   studentId: number; absent?: boolean; remarks?: string; total?: number;
   subjects?: { subjectId: number; marks: number }[];
 };
-export type TestInput = Omit<Partial<Test>, "subjects"> & { subjects?: { name: string; maxMarks: number }[] };
+export type TestInput = Omit<Partial<Test>, "subjects"> & { subjects?: { name: string; maxMarks: number; passingMarks?: number }[] };
 
 export const testsApi = {
   list: (params: { courseId?: number; batchId?: number; search?: string } = {}) => {
@@ -597,9 +604,11 @@ export const testsApi = {
   update: (id: number, data: TestInput) =>
     request<Test>(`/api/tests/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   remove: (id: number) => request<void>(`/api/tests/${id}`, { method: "DELETE" }),
-  results: (id: number) => request<{ test: Test; roster: TestRosterRow[] }>(`/api/tests/${id}/results`),
+  results: (id: number) => request<{ test: Test; roster: TestRosterRow[]; stats: TestStats }>(`/api/tests/${id}/results`),
   saveResults: (id: number, marks: TestMarkInput[]) =>
     request<{ saved: number }>(`/api/tests/${id}/results`, { method: "POST", body: JSON.stringify({ marks }) }),
+  publish: (id: number, published: boolean) =>
+    request<{ published: boolean }>(`/api/tests/${id}/publish`, { method: "PATCH", body: JSON.stringify({ published }) }),
   studentResults: (studentId: number) => request<StudentTestResult[]>(`/api/tests/student/${studentId}`),
   importRows: (id: number, data: { rows: ImportRow[]; validateOnly?: boolean }) =>
     request<ImportResult>(`/api/tests/${id}/import`, { method: "POST", body: JSON.stringify(data) }),

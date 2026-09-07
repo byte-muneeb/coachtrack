@@ -289,20 +289,21 @@ export default function StudentProfilePage() {
                 <thead className="bg-surface-container-low font-label-md text-label-md uppercase text-on-surface-variant">
                   <tr>
                     <th className="px-md py-sm">Test</th><th className="px-md py-sm">Course</th><th className="px-md py-sm">Date</th>
-                    <th className="px-md py-sm text-right">Marks</th><th className="px-md py-sm text-right">%</th><th className="px-md py-sm text-center">Result</th>
+                    <th className="px-md py-sm text-right">Marks</th><th className="px-md py-sm text-right">%</th><th className="px-md py-sm text-center">Grade</th><th className="px-md py-sm text-center">Result</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-outline-variant">
                   {testResults.map((t) => (
                     <tr key={t.testId} className="hover:bg-secondary/5">
-                      <td className="px-md py-sm font-body-md text-body-md font-medium">{t.name}</td>
+                      <td className="px-md py-sm font-body-md text-body-md font-medium">{t.name}{!t.published && <span className="ml-1 rounded bg-surface-container px-1 text-[10px] uppercase text-on-surface-variant">draft</span>}</td>
                       <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{t.courseName || "—"}</td>
                       <td className="px-md py-sm font-body-md text-body-md">{t.testDate ? fmtDate(t.testDate) : "—"}</td>
                       <td className="px-md py-sm text-right font-mono-data text-mono-data">{t.absent ? "—" : `${t.obtainedMarks}/${t.totalMarks}`}</td>
                       <td className="px-md py-sm text-right font-mono-data text-mono-data text-on-surface-variant">{t.percentage != null ? `${t.percentage}%` : "—"}</td>
+                      <td className="px-md py-sm text-center font-label-md text-label-md font-bold">{t.absent ? "—" : t.grade}</td>
                       <td className="px-md py-sm text-center">
                         {t.absent ? <span className="rounded-md bg-surface-container px-sm py-[2px] font-label-md text-label-md text-on-surface-variant">Absent</span>
-                          : <span className={`rounded-md px-sm py-[2px] font-label-md text-label-md font-semibold ${t.passed ? "bg-emerald-50 text-emerald-700" : "bg-error-container text-on-error-container"}`}>{t.passed ? "Pass" : "Fail"}</span>}
+                          : <span className={`rounded-md px-sm py-[2px] font-label-md text-label-md font-semibold ${t.passed ? "bg-emerald-50 text-emerald-700" : "bg-error-container text-on-error-container"}`} title={!t.passed && t.failedSubjects.length ? `Failed: ${t.failedSubjects.join(", ")}` : undefined}>{t.passed ? "Pass" : "Fail"}</span>}
                       </td>
                     </tr>
                   ))}

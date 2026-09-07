@@ -75,7 +75,7 @@ const CAMEL = [
   "totalIncome", "totalOutstanding", "totalStudents",
   // tests & results (B2)
   "testId", "testDate", "totalMarks", "passingMarks", "maxMarks", "obtainedMarks",
-  "subjectId", "subjectCount", "resultCount",
+  "subjectId", "subjectCount", "resultCount", "enrollBatchId",
 ];
 const KEY_MAP: Record<string, string> = {};
 for (const c of CAMEL) KEY_MAP[c.toLowerCase()] = c;
@@ -602,6 +602,7 @@ export async function ensureSchema(): Promise<void> {
       totalMarks   DOUBLE PRECISION NOT NULL DEFAULT 0,
       passingMarks DOUBLE PRECISION NOT NULL DEFAULT 0,
       status       TEXT NOT NULL DEFAULT 'active',
+      published    SMALLINT NOT NULL DEFAULT 0,
       createdAt    TIMESTAMPTZ NOT NULL DEFAULT now(),
       updatedAt    TIMESTAMPTZ NOT NULL DEFAULT now(),
       CONSTRAINT FK_Tests_Courses  FOREIGN KEY (courseId) REFERENCES Courses(id)  ON DELETE CASCADE,
@@ -614,9 +615,10 @@ export async function ensureSchema(): Promise<void> {
       id        INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
       entityId  INT NOT NULL,
       testId    INT NOT NULL,
-      name      TEXT NOT NULL,
-      maxMarks  DOUBLE PRECISION NOT NULL DEFAULT 0,
-      position  INT NOT NULL DEFAULT 0,
+      name         TEXT NOT NULL,
+      maxMarks     DOUBLE PRECISION NOT NULL DEFAULT 0,
+      passingMarks DOUBLE PRECISION NOT NULL DEFAULT 0,
+      position     INT NOT NULL DEFAULT 0,
       CONSTRAINT FK_TestSubjects_Tests    FOREIGN KEY (testId)   REFERENCES Tests(id)    ON DELETE CASCADE,
       CONSTRAINT FK_TestSubjects_Entities FOREIGN KEY (entityId) REFERENCES Entities(id) ON DELETE CASCADE
     );`);
@@ -682,6 +684,9 @@ export async function ensureSchema(): Promise<void> {
   await run(`CREATE INDEX IF NOT EXISTS idx_testresults_t   ON TestResults(testId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_testresults_s   ON TestResults(studentId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_trm_ts          ON TestResultMarks(testId, studentId);`);
+  // Phase T migrations for DBs that already have the B2 test tables.
+  await run(`ALTER TABLE Tests ADD COLUMN IF NOT EXISTS published SMALLINT NOT NULL DEFAULT 0;`);
+  await run(`ALTER TABLE TestSubjects ADD COLUMN IF NOT EXISTS passingMarks DOUBLE PRECISION NOT NULL DEFAULT 0;`);
   await run(`CREATE INDEX IF NOT EXISTS idx_branches_e     ON Branches(entityId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_users_e        ON Users(entityId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_audit_e        ON AuditLog(entityId);`);
