@@ -4,10 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { NAV } from "@/lib/nav";
+import { canAccess } from "@/lib/permissions";
 import { statsApi, setToken, exitImpersonation } from "@/lib/api";
-
-// Nav items only an entity_admin sees (institution-wide config/management).
-const ENTITY_ADMIN_ONLY = new Set(["/settings", "/users", "/audit", "/reminders", "/branches"]);
 function roleLabel(role: string) {
   return role.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -84,7 +82,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const roleName = roleLabel(role);
   const impersonating = !!user?.impersonatorId;
   const nav = NAV
-    .map((g) => ({ ...g, items: g.items.filter((it) => role === "entity_admin" || !ENTITY_ADMIN_ONLY.has(it.href)) }))
+    .map((g) => ({ ...g, items: g.items.filter((it) => canAccess(role, it.href)) }))
     .filter((g) => g.items.length > 0);
 
   // Close any menu + the mobile drawer when the route changes.

@@ -8,7 +8,9 @@ const router = Router();
 // Reminder CONFIG (rules, template edits, queue) is entity-admin only. The
 // template READ is open to any scoped user so front desk / accountants can
 // generate the WhatsApp reminder message when collecting fees.
-const adminOnly = requireRole("entity_admin");
+// Finance/management roles may manage reminder rules & templates (the module
+// mount in routes/index.ts already restricts who reaches these endpoints).
+const adminOnly = requireRole("entity_admin", "branch_manager", "accountant");
 
 const DEFAULT_TEMPLATE =
   "Dear Parent, this is a reminder that {StudentName}'s fee of Rs {Amount} is due on {DueDate}. Please pay on time to avoid interruption. - CoachTrack";

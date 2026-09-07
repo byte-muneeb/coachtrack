@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { getPool, sql, type SqlRequest } from "../db";
-import { type AuthedRequest } from "../auth";
+import { requireRole, type AuthedRequest } from "../auth";
 
 const router = Router();
 
@@ -118,7 +118,7 @@ router.get("/dashboard", async (req, res, next) => {
 });
 
 // GET /api/reports?from=&to=&course=&status= — filterable financial + academic overview
-router.get("/reports", async (req, res, next) => {
+router.get("/reports", requireRole("entity_admin", "branch_manager", "accountant"), async (req, res, next) => {
   try {
     const pool = await getPool();
     const { cond, bindScope } = scoping(req as AuthedRequest);
