@@ -42,6 +42,19 @@ router.get("/", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// GET /api/inquiries/:id — single inquiry (used to prefill the registration form)
+router.get("/:id", async (req, res, next) => {
+  try {
+    const pool = await getPool();
+    const s = scope((req as AuthedRequest).ctx);
+    const id = Number(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    const r = await s.apply(pool.request()).input("id", sql.Int, id).query(`SELECT * FROM dbo.Inquiries WHERE id=@id ${s.clause}`);
+    if (!r.recordset[0]) return res.status(404).json({ error: "Inquiry not found" });
+    res.json(r.recordset[0]);
+  } catch (e) { next(e); }
+});
+
 // POST /api/inquiries
 router.post("/", canWrite, async (req, res, next) => {
   try {
@@ -92,8 +105,9 @@ router.put("/:id", canWrite, async (req, res, next) => {
       .input("trialDate", sql.Date, b.trialDate !== undefined ? toDate(b.trialDate) : cur.trialDate)
       .input("followUpDate", sql.Date, b.followUpDate !== undefined ? toDate(b.followUpDate) : cur.followUpDate)
       .input("notes", sql.NVarChar, b.notes !== undefined ? str(b.notes) : cur.notes)
+      .input("convertedStudentId", sql.Int, b.convertedStudentId !== undefined ? (b.convertedStudentId != null ? Number(b.convertedStudentId) : null) : cur.convertedStudentId)
       .query(`UPDATE dbo.Inquiries SET name=@name,phone=@phone,email=@email,interestedCourse=@interestedCourse,source=@source,
-              stage=@stage,trialDate=@trialDate,followUpDate=@followUpDate,notes=@notes,updatedAt=SYSUTCDATETIME()
+              stage=@stage,trialDate=@trialDate,followUpDate=@followUpDate,notes=@notes,convertedStudentId=@convertedStudentId,updatedAt=SYSUTCDATETIME()
               OUTPUT INSERTED.* WHERE id=@id ${s.clause}`);
     res.json(r.recordset[0]);
   } catch (e) { next(e); }

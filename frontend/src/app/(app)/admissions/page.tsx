@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { inquiriesApi, type Inquiry } from "@/lib/api";
 import StatCard from "@/components/StatCard";
 import PageHeader from "@/components/PageHeader";
@@ -20,6 +21,7 @@ type IForm = { name: string; phone: string; interestedCourse: string; source: st
 const EMPTY: IForm = { name: "", phone: "", interestedCourse: "", source: "Walk-in", trialDate: "", notes: "" };
 
 export default function AdmissionsPage() {
+  const router = useRouter();
   const [items, setItems] = useState<Inquiry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -58,10 +60,11 @@ export default function AdmissionsPage() {
     try { await inquiriesApi.update(i.id, { stage }); await load(); }
     catch (e) { alert(e instanceof Error ? e.message : "Failed"); }
   }
-  async function convert(i: Inquiry) {
-    if (!confirm(`Convert ${i.name} into an enrolled student?`)) return;
-    try { const r = await inquiriesApi.convert(i.id); await load(); alert(`Enrolled as ${r.student.registryId}`); }
-    catch (e) { alert(e instanceof Error ? e.message : "Failed"); }
+  // Enroll → open the full registration form pre-filled from this inquiry.
+  // The register page completes the conversion (creates the student, marks the
+  // inquiry enrolled) so staff can review/complete guardian, batch, branch, etc.
+  function enroll(i: Inquiry) {
+    router.push(`/students/register?inquiryId=${i.id}`);
   }
   async function del(i: Inquiry) {
     if (!confirm(`Delete inquiry for ${i.name}?`)) return;
@@ -154,7 +157,10 @@ export default function AdmissionsPage() {
                     <td className="px-md py-sm">
                       <div className="flex items-center justify-end gap-sm">
                         {i.stage !== "enrolled" && !i.convertedStudentId && (
-                          <button onClick={() => convert(i)} title="Convert to student" className="rounded-md bg-secondary px-sm py-[3px] font-label-md text-label-md text-on-secondary hover:opacity-90">Enroll</button>
+                          <button onClick={() => enroll(i)} title="Enroll as student" className="rounded-md bg-secondary px-sm py-[3px] font-label-md text-label-md text-on-secondary hover:opacity-90">Enroll</button>
+                        )}
+                        {i.convertedStudentId && (
+                          <button onClick={() => router.push(`/students/${i.convertedStudentId}`)} title="Open enrolled student" className="rounded-md border border-outline-variant px-sm py-[3px] font-label-md text-label-md text-on-surface-variant hover:bg-surface-container-high">View</button>
                         )}
                         <button onClick={() => del(i)} title="Delete" className="text-error hover:opacity-80">
                           <span className="material-symbols-outlined text-[18px]">delete</span>

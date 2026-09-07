@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { studentsApi, coursesApi, enrollmentsApi, branchesApi, type Course, type Batch, type Branch } from "@/lib/api";
+import { studentsApi, coursesApi, enrollmentsApi, branchesApi, inquiriesApi, type Course, type Batch, type Branch } from "@/lib/api";
 import { Field, TextInput, Select, inputCls, numberGuard, noWheel } from "@/components/form";
 
 const rs = (n: number) => "Rs " + Number(n || 0).toLocaleString("en-PK");
@@ -11,7 +11,17 @@ const rs = (n: number) => "Rs " + Number(n || 0).toLocaleString("en-PK");
 type Enroll = { batchId: number; courseName: string; batchName: string; monthlyFee: number; discount: number };
 
 export default function RegisterPage() {
+  return (
+    <Suspense fallback={<main className="md:ml-[280px] pt-16 min-h-screen p-lg"><p className="font-body-md text-body-md text-on-surface-variant">Loading…</p></main>}>
+      <RegisterForm />
+    </Suspense>
+  );
+}
+
+function RegisterForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const inquiryId = searchParams.get("inquiryId");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdId, setCreatedId] = useState<number | null>(null);
@@ -29,6 +39,10 @@ export default function RegisterPage() {
   const [branchId, setBranchId] = useState("");
   const [branches, setBranches] = useState<Branch[]>([]);
 
+  // Inquiry prefill (when arriving from Admissions → Enroll).
+  const [fromInquiry, setFromInquiry] = useState<string | null>(null);
+  const [pendingCourse, setPendingCourse] = useState<string | null>(null);
+
   // enrollment picker
   const [courses, setCourses] = useState<Course[]>([]);
   const [batchesByCourse, setBatchesByCourse] = useState<Record<number, Batch[]>>({});
@@ -41,6 +55,32 @@ export default function RegisterPage() {
     coursesApi.list().then(setCourses).catch(() => setCourses([]));
     branchesApi.list().then(setBranches).catch(() => setBranches([]));
   }, []);
+
+  // Prefill from an inquiry when ?inquiryId= is present. Fields the inquiry
+  // doesn't carry (guardian, DOB, address, batch) stay blank for staff to fill.
+  useEffect(() => {
+    if (!inquiryId) return;
+    inquiriesApi.get(Number(inquiryId)).then((inq) => {
+      setFromInquiry(inq.name);
+      setFullName((v) => v || inq.name || "");
+      setPhone((v) => v || inq.phone || "");
+      setEmail((v) => v || inq.email || "");
+      const extras = [inq.notes, inq.source ? `Source: ${inq.source}` : "", inq.trialDate ? `Trial: ${inq.trialDate}` : ""].filter(Boolean).join(" · ");
+      if (extras) setNotes((v) => v || extras);
+      if (inq.interestedCourse) setPendingCourse(inq.interestedCourse);
+    }).catch(() => {});
+  }, [inquiryId]);
+
+  // Once courses are loaded, try to match the inquiry's interested course and
+  // pre-select it (staff still picks the specific batch).
+  useEffect(() => {
+    if (!pendingCourse || courses.length === 0 || pickCourse) return;
+    const wanted = pendingCourse.trim().toLowerCase();
+    const match = courses.find((c) => c.name.toLowerCase() === wanted)
+      || courses.find((c) => c.name.toLowerCase().includes(wanted) || wanted.includes(c.name.toLowerCase()));
+    if (match) onPickCourse(String(match.id));
+    setPendingCourse(null);
+  }, [pendingCourse, courses, pickCourse]);
 
   const selectedCourse = courses.find((c) => String(c.id) === pickCourse);
   const courseBatches = selectedCourse ? batchesByCourse[selectedCourse.id] : undefined;
@@ -116,6 +156,10 @@ export default function RegisterPage() {
         setSaving(false);
         return;
       }
+      // Close the loop on the originating inquiry: mark it enrolled + linked.
+      if (inquiryId) {
+        try { await inquiriesApi.update(Number(inquiryId), { stage: "enrolled", convertedStudentId: created.id }); } catch { /* non-blocking */ }
+      }
       router.push(`/students/${created.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to register student");
@@ -135,6 +179,13 @@ export default function RegisterPage() {
             Cancel
           </Link>
         </div>
+
+        {fromInquiry && (
+          <div className="flex items-center gap-xs rounded-lg border border-secondary bg-secondary/5 px-md py-sm font-body-md text-body-md text-primary">
+            <span className="material-symbols-outlined text-[18px]">how_to_reg</span>
+            Enrolling from inquiry: <b>{fromInquiry}</b>. Review and complete the details below.
+          </div>
+        )}
 
         {error && (
           <div className="rounded-lg border border-error bg-error-container px-md py-sm font-body-md text-body-md text-on-error-container">

@@ -283,7 +283,7 @@ export default function VouchersPage() {
       </div>
 
       {createOpen && <CreateVoucher students={students} fees={fees} onClose={() => setCreateOpen(false)} onSaved={() => { setCreateOpen(false); load(); }} />}
-      {generateOpen && <GenerateDialog courses={courses} fees={fees} onClose={() => setGenerateOpen(false)} onDone={() => { setGenerateOpen(false); load(); }} />}
+      {generateOpen && <GenerateDialog courses={courses} fees={fees} students={students} onClose={() => setGenerateOpen(false)} onDone={() => { setGenerateOpen(false); load(); }} />}
       {installmentOpen && <InstallmentDialog students={students} onClose={() => setInstallmentOpen(false)} onDone={() => { setInstallmentOpen(false); load(); }} />}
       {payFor && (
         <RecordPayment
@@ -301,22 +301,30 @@ export default function VouchersPage() {
 }
 
 /* ------------------------------ Generate vouchers (wizard) ------------------------------ */
-function GenerateDialog({ courses, fees, onClose, onDone }: { courses: Course[]; fees: FeeComponent[]; onClose: () => void; onDone: () => void }) {
+function GenerateDialog({ courses, fees, students, onClose, onDone }: { courses: Course[]; fees: FeeComponent[]; students: Student[]; onClose: () => void; onDone: () => void }) {
+  const [mode, setMode] = useState<"bulk" | "single">("bulk");
   const [month, setMonth] = useState(thisMonth());
   const [genDate, setGenDate] = useState(today());
   const [dueDate, setDueDate] = useState("");
   const [expiryDate, setExpiryDate] = useState("");
-  // scope
+  // scope (bulk)
   const [branchId, setBranchId] = useState("");
   const [courseId, setCourseId] = useState("");
   const [batchId, setBatchId] = useState("");
   const [branches, setBranches] = useState<Branch[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
+  // single-student
+  const [studentId, setStudentId] = useState("");
+  const [studentSearch, setStudentSearch] = useState("");
+  const [allowDup, setAllowDup] = useState(true);
   // add-on charges
   const [includeExam, setIncludeExam] = useState(false);
   const [feeIds, setFeeIds] = useState<number[]>([]);
+  // ad-hoc custom charges defined right here
+  const [customItems, setCustomItems] = useState<{ label: string; amount: string }[]>([]);
+  const [saveToLibrary, setSaveToLibrary] = useState(false);
   // preview / submit
-  const [preview, setPreview] = useState<{ count: number; total: number } | null>(null);
+  const [preview, setPreview] = useState<{ count: number; total: number; rows: { studentId: number; studentName: string; amount: number }[] } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
@@ -331,16 +339,26 @@ function GenerateDialog({ courses, fees, onClose, onDone }: { courses: Course[];
   }, [courseId]);
 
   const activeFees = fees.filter((f) => f.status !== "inactive");
+  const single = mode === "single";
   const build = (dryRun: boolean): GenerateInput => ({
     billingMonth: month, generateDate: genDate, dueDate, expiryDate,
-    branchId: branchId ? Number(branchId) : null, courseId: courseId ? Number(courseId) : null, batchId: batchId ? Number(batchId) : null,
+    branchId: single ? null : (branchId ? Number(branchId) : null),
+    courseId: single ? null : (courseId ? Number(courseId) : null),
+    batchId: single ? null : (batchId ? Number(batchId) : null),
+    studentId: single && studentId ? Number(studentId) : null,
+    allowDuplicateMonth: single ? allowDup : false,
     feeComponentIds: feeIds, includeExamFee: includeExam, dryRun,
+    customItems: customItems.map((c) => ({ label: c.label.trim(), amount: Number(c.amount) || 0 })).filter((c) => c.label && c.amount !== 0),
+    saveCustomToLibrary: saveToLibrary,
   });
+  const setCustom = (i: number, k: "label" | "amount", v: string) => { setCustomItems((p) => p.map((row, idx) => (idx === i ? { ...row, [k]: v } : row))); clear(); };
+  const addCustom = () => setCustomItems((p) => [...p, { label: "", amount: "" }]);
+  const removeCustom = (i: number) => { setCustomItems((p) => p.filter((_, idx) => idx !== i)); clear(); };
   function toggleFee(id: number) { setFeeIds((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id])); clear(); }
 
   async function doPreview() {
     setBusy(true); setErr(null);
-    try { const r = await vouchersApi.generate(build(true)); setPreview({ count: r.created, total: r.totalAmount }); }
+    try { const r = await vouchersApi.generate(build(true)); setPreview({ count: r.created, total: r.totalAmount, rows: r.breakdown ?? [] }); }
     catch (e) { setErr(e instanceof Error ? e.message : "Preview failed"); }
     finally { setBusy(false); }
   }
@@ -364,29 +382,62 @@ function GenerateDialog({ courses, fees, onClose, onDone }: { courses: Course[];
         {err && <div className="rounded-lg border border-error bg-error-container px-md py-sm font-body-md text-body-md text-on-error-container">{err}</div>}
         {result && <div className="rounded-lg border border-green-300 bg-green-50 px-md py-sm font-body-md text-body-md text-green-800">{result}</div>}
 
+        {/* Mode toggle */}
+        <div className="inline-flex rounded-lg border border-outline-variant p-[3px]">
+          {([["bulk", "Monthly run (bulk)"], ["single", "Single student"]] as const).map(([m, label]) => (
+            <button type="button" key={m} onClick={() => { setMode(m); clear(); }}
+              className={`rounded-md px-md py-[6px] font-label-md text-label-md font-medium ${mode === m ? "bg-secondary text-on-secondary" : "text-on-surface-variant hover:bg-surface-container-high"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+
         {/* Scope */}
         <p className="font-label-md text-label-md uppercase tracking-wide text-on-surface-variant">Who to bill</p>
-        <div className="grid grid-cols-1 gap-md sm:grid-cols-2">
-          <Field label="Billing Month" required><TextInput type="month" value={month} onChange={(e) => { setMonth(e.target.value); clear(); }} required /></Field>
-          <label className="flex flex-col gap-xs"><span className="font-label-md text-label-md text-on-surface-variant">Branch</span>
-            <select className={selCls} value={branchId} onChange={(e) => { setBranchId(e.target.value); clear(); }}>
-              <option value="">All branches</option>
-              {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
-          </label>
-          <label className="flex flex-col gap-xs"><span className="font-label-md text-label-md text-on-surface-variant">Course</span>
-            <select className={selCls} value={courseId} onChange={(e) => { setCourseId(e.target.value); clear(); }}>
-              <option value="">All courses</option>
-              {courses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </label>
-          <label className="flex flex-col gap-xs"><span className="font-label-md text-label-md text-on-surface-variant">Batch</span>
-            <select className={selCls} value={batchId} onChange={(e) => { setBatchId(e.target.value); clear(); }} disabled={!courseId}>
-              <option value="">{courseId ? "All batches" : "Pick a course first"}</option>
-              {batches.map((b) => <option key={b.id} value={b.id}>{b.name}{b.timeSlot ? ` — ${b.timeSlot}` : ""}</option>)}
-            </select>
-          </label>
-        </div>
+        {single ? (
+          <div className="space-y-sm">
+            <input className={selCls} placeholder="Search name or registry ID…" value={studentSearch} onChange={(e) => { setStudentSearch(e.target.value); clear(); }} />
+            <label className="flex flex-col gap-xs"><span className="font-label-md text-label-md text-on-surface-variant">Student *</span>
+              <select className={selCls} value={studentId} onChange={(e) => { setStudentId(e.target.value); clear(); }} required>
+                <option value="">Select a student…</option>
+                {students
+                  .filter((s) => { const q = studentSearch.trim().toLowerCase(); return !q || s.fullName.toLowerCase().includes(q) || (s.registryId || "").toLowerCase().includes(q); })
+                  .slice(0, 100)
+                  .map((s) => <option key={s.id} value={s.id}>{s.fullName} ({s.registryId})</option>)}
+              </select>
+            </label>
+            <div className="grid grid-cols-1 gap-md sm:grid-cols-2">
+              <Field label="Billing Month" required><TextInput type="month" value={month} onChange={(e) => { setMonth(e.target.value); clear(); }} required /></Field>
+              <label className="flex items-center gap-sm self-end pb-sm font-body-md text-body-md text-on-surface">
+                <input type="checkbox" checked={allowDup} onChange={(e) => { setAllowDup(e.target.checked); clear(); }} className="h-4 w-4 accent-secondary" />
+                Bill even if already invoiced this month
+              </label>
+            </div>
+            <p className="font-label-md text-label-md text-on-surface-variant">Bills this student for their active batch fees (with discount/scholarship), plus any charges below.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-md sm:grid-cols-2">
+            <Field label="Billing Month" required><TextInput type="month" value={month} onChange={(e) => { setMonth(e.target.value); clear(); }} required /></Field>
+            <label className="flex flex-col gap-xs"><span className="font-label-md text-label-md text-on-surface-variant">Branch</span>
+              <select className={selCls} value={branchId} onChange={(e) => { setBranchId(e.target.value); clear(); }}>
+                <option value="">All branches</option>
+                {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </label>
+            <label className="flex flex-col gap-xs"><span className="font-label-md text-label-md text-on-surface-variant">Course</span>
+              <select className={selCls} value={courseId} onChange={(e) => { setCourseId(e.target.value); clear(); }}>
+                <option value="">All courses</option>
+                {courses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </label>
+            <label className="flex flex-col gap-xs"><span className="font-label-md text-label-md text-on-surface-variant">Batch</span>
+              <select className={selCls} value={batchId} onChange={(e) => { setBatchId(e.target.value); clear(); }} disabled={!courseId}>
+                <option value="">{courseId ? "All batches" : "Pick a course first"}</option>
+                {batches.map((b) => <option key={b.id} value={b.id}>{b.name}{b.timeSlot ? ` — ${b.timeSlot}` : ""}</option>)}
+              </select>
+            </label>
+          </div>
+        )}
 
         {/* Charges */}
         <p className="font-label-md text-label-md uppercase tracking-wide text-on-surface-variant">Charges on this voucher</p>
@@ -413,6 +464,31 @@ function GenerateDialog({ courses, fees, onClose, onDone }: { courses: Course[];
               </div>
             </div>
           )}
+
+          {/* Define new fees on the spot */}
+          <div className="mt-sm border-t border-outline-variant pt-sm">
+            <p className="mb-xs font-label-md text-label-md text-on-surface-variant">Other charges (define new — use a negative amount for a rebate):</p>
+            {customItems.length > 0 && (
+              <div className="space-y-xs">
+                {customItems.map((row, i) => (
+                  <div key={i} className="flex items-center gap-xs">
+                    <input className={`${selCls} flex-1`} placeholder="Charge name (e.g. Prospectus)" value={row.label} onChange={(e) => setCustom(i, "label", e.target.value)} />
+                    <input className={`${selCls} w-[140px]`} type="number" inputMode="numeric" placeholder="Amount" value={row.amount} onChange={(e) => setCustom(i, "amount", e.target.value)} />
+                    <button type="button" onClick={() => removeCustom(i)} title="Remove" className="text-error hover:opacity-80"><span className="material-symbols-outlined text-[18px]">delete</span></button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button type="button" onClick={addCustom} className="mt-xs flex items-center gap-xs font-label-md text-label-md font-medium text-secondary hover:opacity-80">
+              <span className="material-symbols-outlined text-[16px]">add_circle</span> Add charge
+            </button>
+            {customItems.some((c) => c.label.trim() && Number(c.amount)) && (
+              <label className="mt-sm flex items-center gap-sm font-body-md text-body-md text-on-surface">
+                <input type="checkbox" checked={saveToLibrary} onChange={(e) => setSaveToLibrary(e.target.checked)} className="h-4 w-4 accent-secondary" />
+                Also save these to the fee library for reuse
+              </label>
+            )}
+          </div>
         </div>
 
         {/* Dates */}
@@ -423,15 +499,34 @@ function GenerateDialog({ courses, fees, onClose, onDone }: { courses: Course[];
         </div>
 
         {preview && (
-          <div className="rounded-lg border border-secondary bg-secondary/5 px-md py-sm font-body-md text-body-md text-primary">
-            Preview: <b>{preview.count}</b> student{preview.count === 1 ? "" : "s"} will be billed · total <b>Rs {preview.total.toLocaleString("en-PK")}</b>{preview.count === 0 ? " (nothing to generate — all billed already or no match)" : ""}
+          <div className="rounded-lg border border-secondary bg-secondary/5 font-body-md text-body-md text-primary">
+            <div className="px-md py-sm">
+              Preview: <b>{preview.count}</b> student{preview.count === 1 ? "" : "s"} will be billed · total <b>Rs {preview.total.toLocaleString("en-PK")}</b>{preview.count === 0 ? " — nothing to generate (all billed already or no match)" : ""}
+            </div>
+            {preview.rows.length > 0 && (
+              <div className="max-h-[220px] overflow-auto border-t border-secondary/30">
+                <table className="w-full text-left">
+                  <thead className="sticky top-0 bg-secondary/10 font-label-md text-label-md uppercase text-on-surface-variant">
+                    <tr><th className="px-md py-[6px] font-medium">Student</th><th className="px-md py-[6px] text-right font-medium">Amount</th></tr>
+                  </thead>
+                  <tbody>
+                    {preview.rows.map((r) => (
+                      <tr key={r.studentId} className="border-t border-secondary/20">
+                        <td className="px-md py-[6px] text-on-surface">{r.studentName}</td>
+                        <td className="px-md py-[6px] text-right font-mono-data text-mono-data text-on-surface">Rs {r.amount.toLocaleString("en-PK")}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
         <div className="flex justify-end gap-sm pt-sm">
           <button type="button" onClick={onClose} className="rounded-lg border border-outline-variant px-md py-sm font-label-md text-label-md text-on-surface-variant hover:bg-surface-container-high">Cancel</button>
-          <button type="button" onClick={doPreview} disabled={busy} className="rounded-lg border border-secondary px-md py-sm font-label-md text-label-md font-semibold text-secondary hover:bg-secondary/10 disabled:opacity-60">{busy ? "…" : "Preview"}</button>
-          <button type="submit" disabled={busy || (preview != null && preview.count === 0)} className="rounded-lg bg-secondary px-md py-sm font-label-md text-label-md font-semibold text-on-secondary hover:opacity-90 disabled:opacity-60">{busy ? "Generating…" : "Generate"}</button>
+          <button type="button" onClick={doPreview} disabled={busy || (single && !studentId)} className="rounded-lg border border-secondary px-md py-sm font-label-md text-label-md font-semibold text-secondary hover:bg-secondary/10 disabled:opacity-60">{busy ? "…" : "Preview"}</button>
+          <button type="submit" disabled={busy || (single && !studentId) || (preview != null && preview.count === 0)} className="rounded-lg bg-secondary px-md py-sm font-label-md text-label-md font-semibold text-on-secondary hover:opacity-90 disabled:opacity-60">{busy ? "Generating…" : "Generate"}</button>
         </div>
       </form>
     </div>

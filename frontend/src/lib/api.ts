@@ -267,11 +267,13 @@ export type Voucher = {
   updatedAt: string;
 };
 
-export type GenerateResult = { month: string; created: number; transfersApplied: number; totalAmount: number };
+export type GenerateBreakdownRow = { studentId: number; studentName: string; amount: number };
+export type GenerateResult = { month: string; created: number; transfersApplied: number; totalAmount: number; breakdown: GenerateBreakdownRow[] };
+export type CustomFeeItem = { label: string; amount: number };
 export type GenerateInput = {
   billingMonth: string; generateDate?: string | null; dueDate?: string | null; expiryDate?: string | null;
-  branchId?: number | null; courseId?: number | null; batchId?: number | null;
-  feeComponentIds?: number[]; includeExamFee?: boolean; dryRun?: boolean;
+  branchId?: number | null; courseId?: number | null; batchId?: number | null; studentId?: number | null;
+  feeComponentIds?: number[]; includeExamFee?: boolean; customItems?: CustomFeeItem[]; saveCustomToLibrary?: boolean; allowDuplicateMonth?: boolean; dryRun?: boolean;
 };
 
 export const vouchersApi = {
@@ -482,6 +484,7 @@ export const inquiriesApi = {
     const qs = q.toString();
     return request<Inquiry[]>(`/api/inquiries${qs ? `?${qs}` : ""}`);
   },
+  get: (id: number) => request<Inquiry>(`/api/inquiries/${id}`),
   create: (data: Partial<Inquiry>) => request<Inquiry>("/api/inquiries", { method: "POST", body: JSON.stringify(data) }),
   update: (id: number, data: Partial<Inquiry>) => request<Inquiry>(`/api/inquiries/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   convert: (id: number) => request<{ student: Student }>(`/api/inquiries/${id}/convert`, { method: "POST" }),
