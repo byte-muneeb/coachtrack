@@ -250,6 +250,9 @@ export const sql = {
 export async function ensureSchema(): Promise<void> {
   const pool = await getPool();
   const run = (q: string) => pool.request().query(q);
+  // Non-critical DDL (backfill migrations, optional indexes): a failure here must
+  // never crash schema init and take the whole API down — log and continue.
+  const safeRun = async (q: string) => { try { await run(q); } catch (e) { console.error("ensureSchema: skipped DDL —", (e as Error).message); } };
 
   // Retired module (Teacher Payroll): drop legacy table.
   // NOTE: Attendance, Tests and TestResults are ACTIVE tables (created below) —
@@ -676,7 +679,7 @@ export async function ensureSchema(): Promise<void> {
   await run(`CREATE INDEX IF NOT EXISTS idx_payments_eb    ON Payments(entityId, branchId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_enrollments_eb ON Enrollments(entityId, branchId);`);
   // At most one ACTIVE enrollment per (student, batch) — makes the enroll guard race-proof.
-  await run(`CREATE UNIQUE INDEX IF NOT EXISTS uq_enroll_active ON Enrollments(studentId, batchId) WHERE status='active';`);
+  await safeRun(`CREATE UNIQUE INDEX IF NOT EXISTS uq_enroll_active ON Enrollments(studentId, batchId) WHERE status='active';`);
   await run(`CREATE INDEX IF NOT EXISTS idx_expenses_eb    ON Expenses(entityId, branchId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_inquiries_eb   ON Inquiries(entityId, branchId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_attendance_ebd ON Attendance(entityId, branchId, date);`);
@@ -685,8 +688,8 @@ export async function ensureSchema(): Promise<void> {
   await run(`CREATE INDEX IF NOT EXISTS idx_testresults_s   ON TestResults(studentId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_trm_ts          ON TestResultMarks(testId, studentId);`);
   // Phase T migrations for DBs that already have the B2 test tables.
-  await run(`ALTER TABLE Tests ADD COLUMN IF NOT EXISTS published SMALLINT NOT NULL DEFAULT 0;`);
-  await run(`ALTER TABLE TestSubjects ADD COLUMN IF NOT EXISTS passingMarks DOUBLE PRECISION NOT NULL DEFAULT 0;`);
+  await safeRun(`ALTER TABLE Tests ADD COLUMN IF NOT EXISTS published SMALLINT NOT NULL DEFAULT 0;`);
+  await safeRun(`ALTER TABLE TestSubjects ADD COLUMN IF NOT EXISTS passingMarks DOUBLE PRECISION NOT NULL DEFAULT 0;`);
   await run(`CREATE INDEX IF NOT EXISTS idx_branches_e     ON Branches(entityId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_users_e        ON Users(entityId);`);
   await run(`CREATE INDEX IF NOT EXISTS idx_audit_e        ON AuditLog(entityId);`);

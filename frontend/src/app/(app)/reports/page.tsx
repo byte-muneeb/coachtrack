@@ -61,7 +61,11 @@ export default function ReportsPage() {
   const courses = data?.availableCourses ?? [];
   const maxMonth = data ? Math.max(1, ...data.monthlyCollections.map((m) => m.collected)) : 1;
   const maxBilling = data ? Math.max(1, ...data.billingByCourse.map((b) => b.expected)) : 1;
-  const pg = usePagination(data?.defaulters ?? [], 15);
+  const [defQ, setDefQ] = useState("");
+  const dql = defQ.trim().toLowerCase();
+  const defaulters = (data?.defaulters ?? []).filter((d) =>
+    !dql || `${d.fullName} ${d.registryId} ${d.course || ""}`.toLowerCase().includes(dql));
+  const pg = usePagination(defaulters, 15);
 
   return (
     <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
@@ -216,9 +220,16 @@ export default function ReportsPage() {
 
             {/* Outstanding / defaulters */}
             <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
-              <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-md py-sm">
+              <div className="flex flex-wrap items-center justify-between gap-sm border-b border-outline-variant bg-surface-container-low px-md py-sm">
                 <span className="font-label-md text-label-md uppercase text-on-surface-variant">Outstanding / Defaulters</span>
-                <span className="font-label-md text-label-md text-on-surface-variant">{data.totalStudents} students in scope</span>
+                <div className="flex items-center gap-md">
+                  <label className="flex items-center gap-xs rounded-lg border border-outline-variant bg-surface px-md py-[6px]">
+                    <span className="material-symbols-outlined text-[18px] text-on-surface-variant">search</span>
+                    <input value={defQ} onChange={(e) => setDefQ(e.target.value)} placeholder="Search student / roll / course"
+                      className="w-[220px] bg-transparent font-body-md text-body-md outline-none placeholder:text-on-surface-variant/70" />
+                  </label>
+                  <span className="font-label-md text-label-md text-on-surface-variant">{data.totalStudents} students in scope</span>
+                </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
@@ -231,10 +242,10 @@ export default function ReportsPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-outline-variant">
-                    {data.defaulters.length === 0 ? (
+                    {defaulters.length === 0 ? (
                       <tr>
                         <td colSpan={4} className="px-md py-xl text-center font-body-md text-body-md text-on-surface-variant">
-                          No outstanding balances.
+                          {data.defaulters.length === 0 ? "No outstanding balances." : "No students match your search."}
                         </td>
                       </tr>
                     ) : (
@@ -257,7 +268,7 @@ export default function ReportsPage() {
                   </tbody>
                 </table>
               </div>
-              {data.defaulters.length > 0 && (
+              {defaulters.length > 0 && (
                 <div className="border-t border-outline-variant px-md py-sm">
                   <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage} total={pg.total} rangeStart={pg.rangeStart} rangeEnd={pg.rangeEnd} unit="defaulters" />
                 </div>

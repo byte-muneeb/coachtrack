@@ -23,6 +23,8 @@ export default function ExpensesPage() {
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState<EForm>({ date: todayStr(), category: "Rent", description: "", amount: "0", paidVia: "Cash" });
   const [saving, setSaving] = useState(false);
+  const [q, setQ] = useState("");
+  const [catFilter, setCatFilter] = useState("all");
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -51,7 +53,12 @@ export default function ExpensesPage() {
     catch (e) { alert(e instanceof Error ? e.message : "Delete failed"); }
   }
   const setF = (k: keyof EForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((p) => ({ ...p, [k]: e.target.value }));
-  const pg = usePagination(expenses, 15);
+  const ql = q.trim().toLowerCase();
+  const filtered = expenses.filter((x) =>
+    (catFilter === "all" || (x.category || "") === catFilter) &&
+    (!ql || `${x.description || ""} ${x.category || ""} ${x.paidVia || ""}`.toLowerCase().includes(ql))
+  );
+  const pg = usePagination(filtered, 15);
 
   return (
     <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
@@ -93,6 +100,18 @@ export default function ExpensesPage() {
           </div>
         )}
 
+        <div className="flex flex-wrap items-center gap-md rounded-xl border border-outline-variant bg-surface-container-lowest p-md">
+          <label className="flex flex-1 items-center gap-xs rounded-lg border border-outline-variant bg-surface px-md py-sm">
+            <span className="material-symbols-outlined text-[18px] text-on-surface-variant">search</span>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search description, category, or method"
+              className="w-full bg-transparent font-body-md text-body-md outline-none placeholder:text-on-surface-variant/70" />
+          </label>
+          <select value={catFilter} onChange={(e) => setCatFilter(e.target.value)} className={inputCls + " w-auto"} title="Category">
+            <option value="all">All categories</option>
+            {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+
         <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
           <table className="w-full text-left">
             <thead className="bg-surface-container-low font-label-md text-label-md uppercase text-on-surface-variant">
@@ -110,8 +129,8 @@ export default function ExpensesPage() {
                 <tr><td colSpan={6} className="px-md py-xl text-center text-on-surface-variant font-body-md">Loading…</td></tr>
               ) : error ? (
                 <tr><td colSpan={6} className="px-md py-xl text-center text-error font-body-md">{error} — is the backend running on :4000?</td></tr>
-              ) : expenses.length === 0 ? (
-                <tr><td colSpan={6} className="px-md py-xl text-center text-on-surface-variant font-body-md">No expenses yet. Click “Add Expense”.</td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={6} className="px-md py-xl text-center text-on-surface-variant font-body-md">{expenses.length === 0 ? "No expenses yet. Click “Add Expense”." : "No expenses match your filter."}</td></tr>
               ) : pg.pageItems.map((x) => (
                 <tr key={x.id} className="hover:bg-secondary/5">
                   <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{fmtDate(x.date) || "—"}</td>

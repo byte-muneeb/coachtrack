@@ -28,6 +28,8 @@ export default function UsersPage() {
   const [form, setForm] = useState<NewUser>(EMPTY);
   const [formErr, setFormErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [q, setQ] = useState("");
+  const [roleFilter, setRoleFilter] = useState("all");
 
   const branchName = useMemo(() => new Map(branches.map((b) => [b.id, b.name])), [branches]);
 
@@ -75,7 +77,12 @@ export default function UsersPage() {
     return ids.map((id) => branchName.get(id) || `#${id}`).join(", ");
   }
 
-  const pg = usePagination(users, 15);
+  const ql = q.trim().toLowerCase();
+  const filtered = users.filter((u) =>
+    (roleFilter === "all" || u.role === roleFilter) &&
+    (!ql || `${u.fullName || ""} ${u.username}`.toLowerCase().includes(ql))
+  );
+  const pg = usePagination(filtered, 15);
 
   return (
     <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
@@ -91,6 +98,18 @@ export default function UsersPage() {
           }
         />
 
+        <div className="flex flex-wrap items-center gap-md rounded-xl border border-outline-variant bg-surface-container-lowest p-md">
+          <label className="flex flex-1 items-center gap-xs rounded-lg border border-outline-variant bg-surface px-md py-sm">
+            <span className="material-symbols-outlined text-[18px] text-on-surface-variant">search</span>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by name or username"
+              className="w-full bg-transparent font-body-md text-body-md outline-none placeholder:text-on-surface-variant/70" />
+          </label>
+          <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} className="rounded-lg border border-outline-variant bg-surface px-md py-sm font-body-md text-body-md outline-none focus:border-secondary" title="Role">
+            <option value="all">All roles</option>
+            {ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+          </select>
+        </div>
+
         <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">
           <table className="w-full text-left">
             <thead className="bg-surface-container-low font-label-md text-label-md uppercase text-on-surface-variant">
@@ -105,8 +124,8 @@ export default function UsersPage() {
                 <tr><td colSpan={6} className="px-md py-xl text-center text-on-surface-variant font-body-md">Loading…</td></tr>
               ) : error ? (
                 <tr><td colSpan={6} className="px-md py-xl text-center text-error font-body-md">{error}</td></tr>
-              ) : users.length === 0 ? (
-                <tr><td colSpan={6} className="px-md py-xl text-center text-on-surface-variant font-body-md">No users yet.</td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={6} className="px-md py-xl text-center text-on-surface-variant font-body-md">{users.length === 0 ? "No users yet." : "No users match your filter."}</td></tr>
               ) : pg.pageItems.map((u) => (
                 <tr key={u.id} className="hover:bg-secondary/5">
                   <td className="px-md py-sm font-body-md text-body-md text-on-surface">{u.fullName || "—"}</td>
