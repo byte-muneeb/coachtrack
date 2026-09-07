@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   vouchersApi, studentsApi, feesApi, settingsApi, coursesApi, remindersApi, branchesApi,
   type Voucher, type Student, type FeeComponent, type InstituteProfile, type Payment, type Course, type Branch, type Batch, type GenerateInput,
@@ -13,6 +13,31 @@ import { fmtDate } from "@/lib/date";
 import { waLink, renderTemplate } from "@/lib/whatsapp";
 
 const rs = (n: number) => "Rs " + Number(n || 0).toLocaleString("en-PK");
+
+/**
+ * Opens a dedicated browser window containing ONLY the given print markup and
+ * triggers the print dialog. Reuses the app's stylesheets (absolute hrefs) so
+ * the voucher looks identical, and avoids the whole dashboard bleeding into the
+ * printout the way an in-page window.print() does.
+ */
+function printHtml(innerHtml: string) {
+  const w = window.open("", "_blank", "width=880,height=1000");
+  if (!w) { alert("Please allow pop-ups for this site to print the voucher."); return; }
+  const head = Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))
+    .map((el) => (el.tagName === "LINK" ? `<link rel="stylesheet" href="${(el as HTMLLinkElement).href}">` : el.outerHTML))
+    .join("\n");
+  w.document.open();
+  w.document.write(
+    `<!doctype html><html><head><meta charset="utf-8"><title>Fee Voucher</title>${head}` +
+    `<style>body{margin:0;background:#fff;color:#000}@page{margin:12mm}</style></head>` +
+    `<body>${innerHtml}</body></html>`
+  );
+  w.document.close();
+  const go = () => { try { w.focus(); w.print(); } catch { /* ignore */ } };
+  // Give the reused stylesheets a moment to apply before invoking print.
+  if (w.document.readyState === "complete") setTimeout(go, 350);
+  else w.onload = () => setTimeout(go, 350);
+}
 const DEFAULT_REMINDER = "Dear Parent, this is a reminder that {StudentName}'s fee of Rs {Amount} is due on {DueDate}. Please pay on time to avoid interruption. - {InstituteName}";
 const STATUS = ["all", "unpaid", "partial", "paid"];
 
@@ -590,6 +615,7 @@ function InstallmentDialog({ students, onClose, onDone }: { students: Student[];
 /* ------------------------------ Bulk voucher print ------------------------------ */
 function BulkVoucherPrint({ ids, profile, onClose }: { ids: number[]; profile: InstituteProfile | null; onClose: () => void }) {
   const [vouchers, setVouchers] = useState<Voucher[] | null>(null);
+  const areaRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     Promise.all(ids.map((id) => vouchersApi.get(id).catch(() => null)))
       .then((vs) => setVouchers(vs.filter(Boolean) as Voucher[]));
@@ -600,7 +626,7 @@ function BulkVoucherPrint({ ids, profile, onClose }: { ids: number[]; profile: I
     <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-auto bg-black/50 p-lg backdrop-blur-sm print:static print:bg-white print:p-0 print:backdrop-blur-none">
       <div className="w-full max-w-[760px]">
         <div className="mb-md flex items-center justify-end gap-sm no-print">
-          <button onClick={() => window.print()} disabled={!vouchers} className="flex items-center gap-xs rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90 disabled:opacity-60">
+          <button onClick={() => printHtml(areaRef.current?.innerHTML ?? "")} disabled={!vouchers} className="flex items-center gap-xs rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90 disabled:opacity-60">
             <span className="material-symbols-outlined text-[18px]">print</span> Print {ids.length}
           </button>
           <button onClick={onClose} className="rounded-lg border border-outline-variant bg-surface-container-lowest px-md py-sm font-label-md text-label-md text-on-surface hover:bg-surface-container-high">Close</button>
@@ -608,7 +634,7 @@ function BulkVoucherPrint({ ids, profile, onClose }: { ids: number[]; profile: I
         {!vouchers ? (
           <div className="rounded-md bg-white p-xl text-center text-black">Loading {ids.length} vouchers…</div>
         ) : (
-          <div className="space-y-lg">
+          <div ref={areaRef} className="space-y-lg">
             {vouchers.map((v) => {
               const remaining = v.amount - v.paidAmount;
               const items = v.items && v.items.length ? v.items : [{ id: 0, label: v.description || "Fee", amount: v.amount, voucherId: v.id, batchId: null }];
@@ -650,6 +676,7 @@ function VoucherPrint({ voucher, profile, onClose }: { voucher: Voucher; profile
   const line2 = [profile?.address, profile?.city].filter(Boolean).join(", ");
   const items = voucher.items && voucher.items.length > 0 ? voucher.items : null;
   const [copies, setCopies] = useState<1 | 3>(1);
+  const areaRef = useRef<HTMLDivElement>(null);
   // A bank challan is the same voucher printed as Bank / Office / Student portions.
   const labels = copies === 3 ? ["Bank Copy", "Office Copy", "Student Copy"] : [""];
 
@@ -719,14 +746,14 @@ function VoucherPrint({ voucher, profile, onClose }: { voucher: Voucher; profile
               <button key={n} onClick={() => setCopies(n)} className={`rounded-md px-md py-[6px] font-label-md text-label-md font-semibold ${copies === n ? "bg-surface text-primary shadow-sm" : "text-on-surface-variant"}`}>{lbl}</button>
             ))}
           </div>
-          <button onClick={() => window.print()} className="flex items-center gap-xs rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90">
+          <button onClick={() => printHtml(areaRef.current?.outerHTML ?? "")} className="flex items-center gap-xs rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90">
             <span className="material-symbols-outlined text-[18px]">print</span> Print
           </button>
           <button onClick={onClose} className="rounded-lg border border-outline-variant bg-surface-container-lowest px-md py-sm font-label-md text-label-md text-on-surface hover:bg-surface-container-high">Close</button>
         </div>
 
         {/* Official black-and-white fee voucher (single or 3-copy bank challan) */}
-        <div className="print-area border border-black bg-white text-black">
+        <div ref={areaRef} className="print-area border border-black bg-white text-black">
           {labels.map((label, i) => (
             <div key={i} className={i > 0 ? "border-t-2 border-dashed border-black" : ""}>
               {copies === 3 && i > 0 && <p className="px-xl pt-[2px] text-center text-[9px] uppercase tracking-widest text-black/50">— cut here —</p>}

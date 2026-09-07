@@ -96,6 +96,12 @@ export function translate(sqlText: string): { text: string; order: string[] } {
   t = t.replace(/GETDATE\(\)/gi, "now()");
   t = t.replace(/\bISNULL\s*\(/gi, "COALESCE(");
 
+  // Case-insensitive matching everywhere: T-SQL LIKE is case-insensitive by
+  // default, but Postgres LIKE is not — so all `LIKE` becomes `ILIKE`. The word
+  // boundary means the `LIKE` inside `ILIKE` is never re-matched, and our
+  // uppercase prefix scans (e.g. voucherNo LIKE 'VCH-%') still match correctly.
+  t = t.replace(/\bLIKE\b/gi, "ILIKE");
+
   // WITH (UPDLOCK) row-lock hint → trailing FOR UPDATE
   let forUpdate = false;
   if (/WITH\s*\(\s*UPDLOCK[^)]*\)/i.test(t)) {
