@@ -510,7 +510,7 @@ export const authApi = {
   users: () => request<AppUser[]>("/api/auth/users"),
   createUser: (data: { username: string; password: string; fullName?: string; role?: string; branchIds?: number[] }) =>
     request<AppUser>("/api/auth/users", { method: "POST", body: JSON.stringify(data) }),
-  updateUser: (id: number, data: { role?: string; branchIds?: number[] }) =>
+  updateUser: (id: number, data: { role?: string; branchIds?: number[]; fullName?: string | null; status?: string; password?: string }) =>
     request<{ ok: boolean }>(`/api/auth/users/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   removeUser: (id: number) => request<void>(`/api/auth/users/${id}`, { method: "DELETE" }),
 };

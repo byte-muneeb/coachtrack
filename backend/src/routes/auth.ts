@@ -157,6 +157,13 @@ router.put("/users/:id", canManageUsers, async (req, res, next) => {
   if (!ctx.allBranches && role === "entity_admin")
     return res.status(403).json({ error: "Only an entity admin can grant the entity_admin role" });
 
+  // Optional profile fields (name / status / password reset).
+  const wantsName = b.fullName !== undefined;
+  const wantsStatus = b.status !== undefined;
+  const wantsPw = typeof b.password === "string" && b.password.length > 0;
+  if (wantsPw && String(b.password).length < 6) return res.status(400).json({ error: "Password must be at least 6 characters" });
+  const status = wantsStatus ? (["active", "suspended"].includes(b.status) ? b.status : cur.status) : cur.status;
+
   // Resolve the new branch set up-front so we can validate before writing.
   // null = leave assignments unchanged; [] = entity_admin (covers all branches).
   let branchIds: number[] | null = null;
@@ -174,19 +181,26 @@ router.put("/users/:id", canManageUsers, async (req, res, next) => {
       branchIds = ids;
     }
   }
-  if (b.role === undefined && branchIds === null) return res.json({ ok: true });
+  if (b.role === undefined && branchIds === null && !wantsName && !wantsStatus && !wantsPw) return res.json({ ok: true });
 
   const tx = new sql.Transaction(pool);
   try {
     await tx.begin();
-    // Never demote the entity's last active admin (lock admin rows to avoid a race).
-    if (cur.role === "entity_admin" && role !== "entity_admin") {
+    // Never demote OR deactivate the entity's last active admin (lock to avoid a race).
+    const losingAdmin = cur.role === "entity_admin" && (role !== "entity_admin" || (wantsStatus && status !== "active"));
+    if (losingAdmin) {
       const admins = await new sql.Request(tx).input("ent", sql.Int, ctx.entityId)
         .query("SELECT id FROM dbo.Users WHERE entityId=@ent AND role='entity_admin' AND status='active' FOR UPDATE");
-      if (admins.recordset.length <= 1) { await tx.rollback(); return res.status(400).json({ error: "Cannot demote the last entity admin" }); }
+      if (admins.recordset.length <= 1) { await tx.rollback(); return res.status(400).json({ error: "Cannot demote or deactivate the last entity admin" }); }
     }
     if (b.role !== undefined)
       await new sql.Request(tx).input("id", sql.Int, id).input("r", sql.NVarChar, role).query("UPDATE dbo.Users SET role=@r WHERE id=@id");
+    if (wantsName)
+      await new sql.Request(tx).input("id", sql.Int, id).input("n", sql.NVarChar, b.fullName ? String(b.fullName).trim() : null).query("UPDATE dbo.Users SET fullName=@n WHERE id=@id");
+    if (wantsStatus)
+      await new sql.Request(tx).input("id", sql.Int, id).input("s", sql.NVarChar, status).query("UPDATE dbo.Users SET status=@s WHERE id=@id");
+    if (wantsPw)
+      await new sql.Request(tx).input("id", sql.Int, id).input("p", sql.NVarChar, hashPassword(String(b.password))).query("UPDATE dbo.Users SET passwordHash=@p WHERE id=@id");
     if (branchIds !== null) {
       await new sql.Request(tx).input("uid", sql.Int, id).query("DELETE FROM UserBranches WHERE userId=@uid");
       for (const bid of branchIds)

@@ -16,8 +16,8 @@ const ROLES = [
 const roleLabel = (r: string) => ROLES.find((x) => x.value === r)?.label || r.replace(/_/g, " ");
 const roleDesc = (r: string) => ROLES.find((x) => x.value === r)?.desc || "";
 
-type NewUser = { username: string; password: string; fullName: string; role: string; branchIds: number[] };
-const EMPTY: NewUser = { username: "", password: "", fullName: "", role: "accountant", branchIds: [] };
+type NewUser = { username: string; password: string; fullName: string; role: string; branchIds: number[]; status: string };
+const EMPTY: NewUser = { username: "", password: "", fullName: "", role: "accountant", branchIds: [], status: "active" };
 
 export default function UsersPage() {
   const [users, setUsers] = useState<AppUser[]>([]);
@@ -25,6 +25,8 @@ export default function UsersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modal, setModal] = useState(false);
+  const [editId, setEditId] = useState<number | null>(null);
+  const [showPw, setShowPw] = useState(false);
   const [form, setForm] = useState<NewUser>(EMPTY);
   const [formErr, setFormErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -49,19 +51,35 @@ export default function UsersPage() {
     setForm((p) => ({ ...p, branchIds: p.branchIds.includes(id) ? p.branchIds.filter((x) => x !== id) : [...p.branchIds, id] }));
   }
 
+  function openNew() { setEditId(null); setForm(EMPTY); setShowPw(false); setFormErr(null); setModal(true); }
+  function openEdit(u: AppUser) {
+    setEditId(u.id);
+    setForm({ username: u.username, password: "", fullName: u.fullName || "", role: u.role, branchIds: u.branchIds ?? [], status: u.status || "active" });
+    setShowPw(false); setFormErr(null); setModal(true);
+  }
+
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setFormErr(null);
-    if (!form.username.trim() || form.password.length < 6) { setFormErr("Username and a 6+ character password are required."); return; }
+    if (!editId && (!form.username.trim() || form.password.length < 6)) { setFormErr("Username and a 6+ character password are required."); return; }
+    if (editId && form.password && form.password.length < 6) { setFormErr("New password must be at least 6 characters."); return; }
     if (needsBranches && form.branchIds.length === 0) { setFormErr("Assign at least one branch for this role."); return; }
     setSaving(true);
     try {
-      await authApi.createUser({
-        username: form.username.trim(), password: form.password, fullName: form.fullName.trim() || undefined,
-        role: form.role, branchIds: needsBranches ? form.branchIds : undefined,
-      });
-      setModal(false); setForm(EMPTY); await load();
-    } catch (e) { setFormErr(e instanceof Error ? e.message : "Failed to create user"); }
+      if (editId) {
+        await authApi.updateUser(editId, {
+          fullName: form.fullName.trim() || null, role: form.role, status: form.status,
+          branchIds: needsBranches ? form.branchIds : undefined,
+          ...(form.password ? { password: form.password } : {}),
+        });
+      } else {
+        await authApi.createUser({
+          username: form.username.trim(), password: form.password, fullName: form.fullName.trim() || undefined,
+          role: form.role, branchIds: needsBranches ? form.branchIds : undefined,
+        });
+      }
+      setModal(false); setForm(EMPTY); setEditId(null); await load();
+    } catch (e) { setFormErr(e instanceof Error ? e.message : "Failed to save user"); }
     finally { setSaving(false); }
   }
   async function del(u: AppUser) {
@@ -92,7 +110,7 @@ export default function UsersPage() {
           subtitle="Manage who can sign in, their role, and which branches they can access."
           icon="manage_accounts"
           actions={
-            <button onClick={() => { setForm(EMPTY); setFormErr(null); setModal(true); }} className="flex items-center gap-xs rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90">
+            <button onClick={openNew} className="flex items-center gap-xs rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90">
               <span className="material-symbols-outlined text-[18px]">person_add</span> New User
             </button>
           }
@@ -133,8 +151,11 @@ export default function UsersPage() {
                   <td className="px-md py-sm"><span className="rounded-full bg-primary-fixed px-sm py-[2px] font-label-md text-label-md text-on-primary-fixed">{roleLabel(u.role)}</span></td>
                   <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{branchesLabel(u)}</td>
                   <td className="px-md py-sm"><span className={`rounded-full px-sm py-[2px] font-label-md text-label-md capitalize ${u.status === "active" ? "bg-green-100 text-green-800" : "bg-surface-container-high text-on-surface-variant"}`}>{u.status}</span></td>
-                  <td className="px-md py-sm text-right">
-                    <button onClick={() => del(u)} className="ml-auto flex h-8 w-8 items-center justify-center rounded-md text-error hover:bg-error-container" title="Remove"><span className="material-symbols-outlined text-[20px]">delete</span></button>
+                  <td className="px-md py-sm">
+                    <div className="flex items-center justify-end gap-xs">
+                      <button onClick={() => openEdit(u)} className="flex h-8 w-8 items-center justify-center rounded-md text-on-surface-variant hover:bg-surface-container-high" title="Edit"><span className="material-symbols-outlined text-[20px]">edit</span></button>
+                      <button onClick={() => del(u)} className="flex h-8 w-8 items-center justify-center rounded-md text-error hover:bg-error-container" title="Remove"><span className="material-symbols-outlined text-[20px]">delete</span></button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -148,14 +169,30 @@ export default function UsersPage() {
       {modal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-md" onClick={() => setModal(false)}>
           <form onClick={(e) => e.stopPropagation()} onSubmit={save} className="w-full max-w-[560px] space-y-md rounded-xl bg-surface-container-lowest p-lg shadow-xl">
-            <h2 className="font-headline-md text-headline-md font-semibold text-primary">New User</h2>
+            <h2 className="font-headline-md text-headline-md font-semibold text-primary">{editId ? "Edit User" : "New User"}</h2>
             <div className="grid grid-cols-1 gap-md sm:grid-cols-2">
               <Field label="Full Name" className="sm:col-span-2"><TextInput value={form.fullName} onChange={(e) => setForm((p) => ({ ...p, fullName: e.target.value }))} /></Field>
-              <Field label="Username" required><TextInput value={form.username} onChange={(e) => setForm((p) => ({ ...p, username: e.target.value }))} required /></Field>
-              <Field label="Password" required hint="Minimum 6 characters"><TextInput type="password" value={form.password} onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))} required /></Field>
-              <Field label="Role" hint={roleDesc(form.role)} className="sm:col-span-2">
+              <Field label="Username" required>
+                <TextInput value={form.username} onChange={(e) => setForm((p) => ({ ...p, username: e.target.value }))} required disabled={!!editId} />
+              </Field>
+              <Field label={editId ? "Reset Password" : "Password"} required={!editId} hint={editId ? "Leave blank to keep current" : "Minimum 6 characters"}>
+                <div className="relative">
+                  <TextInput type={showPw ? "text" : "password"} value={form.password} onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))} required={!editId} placeholder={editId ? "••••••" : ""} />
+                  <button type="button" onClick={() => setShowPw((v) => !v)} title={showPw ? "Hide" : "Show"}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 flex h-7 w-7 items-center justify-center rounded-md text-on-surface-variant hover:bg-surface-container-high">
+                    <span className="material-symbols-outlined text-[18px]">{showPw ? "visibility_off" : "visibility"}</span>
+                  </button>
+                </div>
+              </Field>
+              <Field label="Role" hint={roleDesc(form.role)}>
                 <Select value={form.role} onChange={(e) => setForm((p) => ({ ...p, role: e.target.value }))}>
                   {ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                </Select>
+              </Field>
+              <Field label="Status">
+                <Select value={form.status} onChange={(e) => setForm((p) => ({ ...p, status: e.target.value }))}>
+                  <option value="active">Active</option>
+                  <option value="suspended">Suspended</option>
                 </Select>
               </Field>
             </div>
@@ -186,7 +223,7 @@ export default function UsersPage() {
             {formErr && <div className="rounded-lg border border-error bg-error-container px-md py-sm font-body-md text-body-md text-on-error-container">{formErr}</div>}
             <div className="flex justify-end gap-sm pt-sm">
               <button type="button" onClick={() => setModal(false)} className="rounded-lg border border-outline-variant px-md py-sm font-label-md text-label-md text-on-surface-variant hover:bg-surface-container-high">Cancel</button>
-              <button type="submit" disabled={saving} className="rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90 disabled:opacity-60">{saving ? "Creating…" : "Create User"}</button>
+              <button type="submit" disabled={saving} className="rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90 disabled:opacity-60">{saving ? "Saving…" : editId ? "Save Changes" : "Create User"}</button>
             </div>
           </form>
         </div>
