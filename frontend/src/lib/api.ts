@@ -267,7 +267,12 @@ export type Voucher = {
   updatedAt: string;
 };
 
-export type GenerateResult = { month: string; created: number; transfersApplied: number };
+export type GenerateResult = { month: string; created: number; transfersApplied: number; totalAmount: number };
+export type GenerateInput = {
+  billingMonth: string; generateDate?: string | null; dueDate?: string | null; expiryDate?: string | null;
+  branchId?: number | null; courseId?: number | null; batchId?: number | null;
+  feeComponentIds?: number[]; includeExamFee?: boolean; dryRun?: boolean;
+};
 
 export const vouchersApi = {
   list: (params: { studentId?: number; status?: string; search?: string; month?: string } = {}) => {
@@ -284,7 +289,7 @@ export const vouchersApi = {
     request<Voucher>("/api/vouchers", { method: "POST", body: JSON.stringify(data) }),
   recordPayment: (id: number, data: { amount: number; method?: string; reference?: string; receivedBy?: string }) =>
     request<Voucher>(`/api/vouchers/${id}/payments`, { method: "POST", body: JSON.stringify(data) }),
-  generate: (data: { billingMonth: string; generateDate?: string | null; dueDate?: string | null; expiryDate?: string | null }) =>
+  generate: (data: GenerateInput) =>
     request<GenerateResult>("/api/vouchers/generate", { method: "POST", body: JSON.stringify(data) }),
   chargeExam: (data: { courseId: number; dueDate?: string | null }) =>
     request<{ created: number; course: string }>("/api/vouchers/charge-exam", { method: "POST", body: JSON.stringify(data) }),

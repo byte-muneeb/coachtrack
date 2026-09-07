@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  vouchersApi, studentsApi, feesApi, settingsApi, coursesApi, remindersApi,
-  type Voucher, type Student, type FeeComponent, type InstituteProfile, type Payment, type Course,
+  vouchersApi, studentsApi, feesApi, settingsApi, coursesApi, remindersApi, branchesApi,
+  type Voucher, type Student, type FeeComponent, type InstituteProfile, type Payment, type Course, type Branch, type Batch, type GenerateInput,
 } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
 import Pagination, { usePagination } from "@/components/Pagination";
@@ -51,7 +51,6 @@ export default function VouchersPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [generateOpen, setGenerateOpen] = useState(false);
-  const [examOpen, setExamOpen] = useState(false);
   const [installmentOpen, setInstallmentOpen] = useState(false);
   const [lateBusy, setLateBusy] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -177,9 +176,6 @@ export default function VouchersPage() {
                       <button onClick={() => { setMoreOpen(false); applyLateFees(); }} disabled={lateBusy} className="flex w-full items-center gap-sm px-md py-sm text-left font-body-md text-body-md text-on-surface hover:bg-surface-container-low disabled:opacity-60">
                         <span className="material-symbols-outlined text-[20px] text-on-surface-variant">gavel</span> {lateBusy ? "Applying…" : "Apply late fees"}
                       </button>
-                      <button onClick={() => { setMoreOpen(false); setExamOpen(true); }} className="flex w-full items-center gap-sm px-md py-sm text-left font-body-md text-body-md text-on-surface hover:bg-surface-container-low">
-                        <span className="material-symbols-outlined text-[20px] text-on-surface-variant">quiz</span> Charge exam fee
-                      </button>
                       <button onClick={() => { setMoreOpen(false); setInstallmentOpen(true); }} className="flex w-full items-center gap-sm px-md py-sm text-left font-body-md text-body-md text-on-surface hover:bg-surface-container-low">
                         <span className="material-symbols-outlined text-[20px] text-on-surface-variant">splitscreen</span> Installment plan
                       </button>
@@ -287,8 +283,7 @@ export default function VouchersPage() {
       </div>
 
       {createOpen && <CreateVoucher students={students} fees={fees} onClose={() => setCreateOpen(false)} onSaved={() => { setCreateOpen(false); load(); }} />}
-      {generateOpen && <GenerateDialog onClose={() => setGenerateOpen(false)} onDone={() => { setGenerateOpen(false); load(); }} />}
-      {examOpen && <ChargeExamDialog courses={courses} onClose={() => setExamOpen(false)} onDone={() => { setExamOpen(false); load(); }} />}
+      {generateOpen && <GenerateDialog courses={courses} fees={fees} onClose={() => setGenerateOpen(false)} onDone={() => { setGenerateOpen(false); load(); }} />}
       {installmentOpen && <InstallmentDialog students={students} onClose={() => setInstallmentOpen(false)} onDone={() => { setInstallmentOpen(false); load(); }} />}
       {payFor && (
         <RecordPayment
@@ -305,106 +300,138 @@ export default function VouchersPage() {
   );
 }
 
-/* ------------------------------ Generate monthly ------------------------------ */
-function GenerateDialog({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+/* ------------------------------ Generate vouchers (wizard) ------------------------------ */
+function GenerateDialog({ courses, fees, onClose, onDone }: { courses: Course[]; fees: FeeComponent[]; onClose: () => void; onDone: () => void }) {
   const [month, setMonth] = useState(thisMonth());
   const [genDate, setGenDate] = useState(today());
   const [dueDate, setDueDate] = useState("");
   const [expiryDate, setExpiryDate] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [result, setResult] = useState<string | null>(null);
-
-  // Default due = 10th, expiry = last day, whenever the month changes.
-  useEffect(() => {
-    setDueDate(`${month}-10`);
-    setExpiryDate(lastDayOf(month));
-  }, [month]);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setSaving(true); setErr(null);
-    try {
-      const r = await vouchersApi.generate({ billingMonth: month, generateDate: genDate, dueDate, expiryDate });
-      setResult(`Generated ${r.created} voucher${r.created === 1 ? "" : "s"} for ${month}` + (r.transfersApplied ? ` · ${r.transfersApplied} transfer(s) applied` : ""));
-      setTimeout(onDone, 1200);
-    } catch (e) { setErr(e instanceof Error ? e.message : "Generation failed"); setSaving(false); }
-  }
-
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-md" onClick={onClose}>
-      <form onClick={(e) => e.stopPropagation()} onSubmit={submit} className="w-full max-w-[520px] space-y-md rounded-xl bg-surface-container-lowest p-lg shadow-xl">
-        <h2 className="font-headline-md text-headline-md font-semibold text-primary">Generate Monthly Vouchers</h2>
-        <p className="font-body-md text-body-md text-on-surface-variant">
-          Creates one combined voucher per student for their active batch enrollments. Students who already have a voucher for the month are skipped, and any pending batch transfers effective this month are applied first.
-        </p>
-        {err && <div className="rounded-lg border border-error bg-error-container px-md py-sm font-body-md text-body-md text-on-error-container">{err}</div>}
-        {result && <div className="rounded-lg border border-green-300 bg-green-50 px-md py-sm font-body-md text-body-md text-green-800">{result}</div>}
-        <div className="grid grid-cols-1 gap-md sm:grid-cols-2">
-          <Field label="Billing Month" required>
-            <TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} required />
-          </Field>
-          <Field label="Generate Date">
-            <TextInput type="date" value={genDate} onChange={(e) => setGenDate(e.target.value)} />
-          </Field>
-          <Field label="Due Date">
-            <TextInput type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
-          </Field>
-          <Field label="Expiry Date">
-            <TextInput type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} />
-          </Field>
-        </div>
-        <div className="flex justify-end gap-sm pt-sm">
-          <button type="button" onClick={onClose} className="rounded-lg border border-outline-variant px-md py-sm font-label-md text-label-md text-on-surface-variant hover:bg-surface-container-high">Cancel</button>
-          <button type="submit" disabled={saving} className="rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90 disabled:opacity-60">{saving ? "Generating…" : "Generate for all active students"}</button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-/* ------------------------------ Charge exam fee ------------------------------ */
-function ChargeExamDialog({ courses, onClose, onDone }: { courses: Course[]; onClose: () => void; onDone: () => void }) {
+  // scope
+  const [branchId, setBranchId] = useState("");
   const [courseId, setCourseId] = useState("");
-  const [dueDate, setDueDate] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [batchId, setBatchId] = useState("");
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [batches, setBatches] = useState<Batch[]>([]);
+  // add-on charges
+  const [includeExam, setIncludeExam] = useState(false);
+  const [feeIds, setFeeIds] = useState<number[]>([]);
+  // preview / submit
+  const [preview, setPreview] = useState<{ count: number; total: number } | null>(null);
+  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
-  const selected = courses.find((c) => String(c.id) === courseId);
+  const clear = () => setPreview(null);
 
+  useEffect(() => { setDueDate(`${month}-10`); setExpiryDate(lastDayOf(month)); }, [month]);
+  useEffect(() => { branchesApi.list().then(setBranches).catch(() => {}); }, []);
+  useEffect(() => {
+    setBatchId("");
+    if (!courseId) { setBatches([]); return; }
+    coursesApi.get(Number(courseId)).then((c) => setBatches(c.batches ?? [])).catch(() => setBatches([]));
+  }, [courseId]);
+
+  const activeFees = fees.filter((f) => f.status !== "inactive");
+  const build = (dryRun: boolean): GenerateInput => ({
+    billingMonth: month, generateDate: genDate, dueDate, expiryDate,
+    branchId: branchId ? Number(branchId) : null, courseId: courseId ? Number(courseId) : null, batchId: batchId ? Number(batchId) : null,
+    feeComponentIds: feeIds, includeExamFee: includeExam, dryRun,
+  });
+  function toggleFee(id: number) { setFeeIds((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id])); clear(); }
+
+  async function doPreview() {
+    setBusy(true); setErr(null);
+    try { const r = await vouchersApi.generate(build(true)); setPreview({ count: r.created, total: r.totalAmount }); }
+    catch (e) { setErr(e instanceof Error ? e.message : "Preview failed"); }
+    finally { setBusy(false); }
+  }
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!courseId) { setErr("Select a course"); return; }
-    setSaving(true); setErr(null);
+    setBusy(true); setErr(null);
     try {
-      const r = await vouchersApi.chargeExam({ courseId: Number(courseId), dueDate: dueDate || null });
-      setResult(`Charged exam fee to ${r.created} student${r.created === 1 ? "" : "s"} of ${r.course}.`);
-      setTimeout(onDone, 1200);
-    } catch (e) { setErr(e instanceof Error ? e.message : "Failed"); setSaving(false); }
+      const r = await vouchersApi.generate(build(false));
+      setResult(`Generated ${r.created} voucher${r.created === 1 ? "" : "s"} · Rs ${r.totalAmount.toLocaleString("en-PK")}` + (r.transfersApplied ? ` · ${r.transfersApplied} transfer(s) applied` : ""));
+      setTimeout(onDone, 1500);
+    } catch (e) { setErr(e instanceof Error ? e.message : "Generation failed"); setBusy(false); }
   }
 
+  const selCls = "w-full rounded-lg border border-outline-variant bg-surface px-md py-sm font-body-md text-body-md outline-none focus:border-secondary";
+
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-md" onClick={onClose}>
-      <form onClick={(e) => e.stopPropagation()} onSubmit={submit} className="w-full max-w-[480px] space-y-md rounded-xl bg-surface-container-lowest p-lg shadow-xl">
-        <h2 className="font-headline-md text-headline-md font-semibold text-primary">Charge Exam Fee</h2>
-        <p className="font-body-md text-body-md text-on-surface-variant">Creates a one-time exam-fee voucher (from the course’s exam fee) for every active student enrolled in the selected course.</p>
+    <div className="fixed inset-0 z-[60] flex items-start justify-center overflow-auto bg-black/40 p-md" onClick={onClose}>
+      <form onClick={(e) => e.stopPropagation()} onSubmit={submit} className="my-lg w-full max-w-[620px] space-y-md rounded-xl bg-surface-container-lowest p-lg shadow-xl">
+        <h2 className="font-headline-md text-headline-md font-semibold text-primary">Generate Vouchers</h2>
+        <p className="font-body-md text-body-md text-on-surface-variant">One combined voucher per student for their active batch fees. Pick who to bill and any extra charges to add this cycle. Students already billed for the month are skipped.</p>
         {err && <div className="rounded-lg border border-error bg-error-container px-md py-sm font-body-md text-body-md text-on-error-container">{err}</div>}
         {result && <div className="rounded-lg border border-green-300 bg-green-50 px-md py-sm font-body-md text-body-md text-green-800">{result}</div>}
-        <Field label="Course" required>
-          <Select value={courseId} onChange={(e) => setCourseId(e.target.value)} required>
-            <option value="">Select course…</option>
-            {courses.map((c) => <option key={c.id} value={c.id}>{c.name} — exam fee {rs(c.examFee)}</option>)}
-          </Select>
-        </Field>
-        {selected && selected.examFee <= 0 && (
-          <p className="font-label-md text-label-md text-error">This course has no exam fee set. Set it in Courses first.</p>
+
+        {/* Scope */}
+        <p className="font-label-md text-label-md uppercase tracking-wide text-on-surface-variant">Who to bill</p>
+        <div className="grid grid-cols-1 gap-md sm:grid-cols-2">
+          <Field label="Billing Month" required><TextInput type="month" value={month} onChange={(e) => { setMonth(e.target.value); clear(); }} required /></Field>
+          <label className="flex flex-col gap-xs"><span className="font-label-md text-label-md text-on-surface-variant">Branch</span>
+            <select className={selCls} value={branchId} onChange={(e) => { setBranchId(e.target.value); clear(); }}>
+              <option value="">All branches</option>
+              {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-xs"><span className="font-label-md text-label-md text-on-surface-variant">Course</span>
+            <select className={selCls} value={courseId} onChange={(e) => { setCourseId(e.target.value); clear(); }}>
+              <option value="">All courses</option>
+              {courses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-xs"><span className="font-label-md text-label-md text-on-surface-variant">Batch</span>
+            <select className={selCls} value={batchId} onChange={(e) => { setBatchId(e.target.value); clear(); }} disabled={!courseId}>
+              <option value="">{courseId ? "All batches" : "Pick a course first"}</option>
+              {batches.map((b) => <option key={b.id} value={b.id}>{b.name}{b.timeSlot ? ` — ${b.timeSlot}` : ""}</option>)}
+            </select>
+          </label>
+        </div>
+
+        {/* Charges */}
+        <p className="font-label-md text-label-md uppercase tracking-wide text-on-surface-variant">Charges on this voucher</p>
+        <div className="rounded-lg border border-outline-variant bg-surface p-md text-body-md">
+          <p className="font-body-md text-on-surface">✓ Monthly tuition (from each student&apos;s batch) — always included, with any discount/scholarship applied.</p>
+          <label className="mt-sm flex items-center gap-sm font-body-md text-on-surface">
+            <input type="checkbox" checked={includeExam} onChange={(e) => { setIncludeExam(e.target.checked); clear(); }} className="h-4 w-4 accent-secondary" />
+            Add each student&apos;s course exam fee
+          </label>
+          {activeFees.length > 0 && (
+            <div className="mt-sm">
+              <p className="mb-xs font-label-md text-label-md text-on-surface-variant">Add fee components (same amount for everyone):</p>
+              <div className="flex flex-wrap gap-xs">
+                {activeFees.map((f) => {
+                  const on = feeIds.includes(f.id);
+                  return (
+                    <button type="button" key={f.id} onClick={() => toggleFee(f.id)}
+                      className={`flex items-center gap-xs rounded-lg px-md py-[6px] font-label-md text-label-md font-medium ring-1 ring-inset ${on ? "bg-secondary text-on-secondary ring-secondary" : "bg-surface-container text-on-surface ring-outline-variant hover:bg-surface-container-high"}`}>
+                      <span className="material-symbols-outlined text-[16px]">{on ? "check_circle" : "add_circle"}</span>
+                      {f.name} · {rs(f.amount)}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Dates */}
+        <div className="grid grid-cols-1 gap-md sm:grid-cols-3">
+          <Field label="Generate Date"><TextInput type="date" value={genDate} onChange={(e) => setGenDate(e.target.value)} /></Field>
+          <Field label="Due Date"><TextInput type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
+          <Field label="Expiry Date"><TextInput type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} /></Field>
+        </div>
+
+        {preview && (
+          <div className="rounded-lg border border-secondary bg-secondary/5 px-md py-sm font-body-md text-body-md text-primary">
+            Preview: <b>{preview.count}</b> student{preview.count === 1 ? "" : "s"} will be billed · total <b>Rs {preview.total.toLocaleString("en-PK")}</b>{preview.count === 0 ? " (nothing to generate — all billed already or no match)" : ""}
+          </div>
         )}
-        <Field label="Due date (optional)">
-          <TextInput type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
-        </Field>
+
         <div className="flex justify-end gap-sm pt-sm">
           <button type="button" onClick={onClose} className="rounded-lg border border-outline-variant px-md py-sm font-label-md text-label-md text-on-surface-variant hover:bg-surface-container-high">Cancel</button>
-          <button type="submit" disabled={saving || (!!selected && selected.examFee <= 0)} className="rounded-lg bg-secondary px-md py-sm font-label-md text-label-md text-on-secondary hover:opacity-90 disabled:opacity-60">{saving ? "Charging…" : "Charge exam fee"}</button>
+          <button type="button" onClick={doPreview} disabled={busy} className="rounded-lg border border-secondary px-md py-sm font-label-md text-label-md font-semibold text-secondary hover:bg-secondary/10 disabled:opacity-60">{busy ? "…" : "Preview"}</button>
+          <button type="submit" disabled={busy || (preview != null && preview.count === 0)} className="rounded-lg bg-secondary px-md py-sm font-label-md text-label-md font-semibold text-on-secondary hover:opacity-90 disabled:opacity-60">{busy ? "Generating…" : "Generate"}</button>
         </div>
       </form>
     </div>

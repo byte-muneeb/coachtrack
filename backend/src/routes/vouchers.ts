@@ -203,36 +203,35 @@ router.post("/", canCreate, async (req, res, next) => {
 // student's branch). Called by the /generate route and by the cron per entity.
 export async function generateMonthlyVouchers(
   pool: SqlPool,
-  opts: { entityId: number; billingMonth: string; generateDate?: Date | null; dueDate?: Date | null; expiryDate?: Date | null }
-): Promise<{ month: string; created: number; transfersApplied: number }> {
+  opts: {
+    entityId: number; billingMonth: string; generateDate?: Date | null; dueDate?: Date | null; expiryDate?: Date | null;
+    branchId?: number | null; courseId?: number | null; batchId?: number | null; // scope filters
+    feeComponentIds?: number[]; includeExamFee?: boolean;                          // add-on charges
+    dryRun?: boolean;                                                              // preview only, no writes
+  }
+): Promise<{ month: string; created: number; transfersApplied: number; totalAmount: number }> {
     const entityId = opts.entityId;
     const month = opts.billingMonth;
     const genDate = opts.generateDate || new Date();
     const dueDate = opts.dueDate ?? null;
     const expiryDate = opts.expiryDate ?? null;
+    const dryRun = !!opts.dryRun;
 
-    // 1) Apply pending transfers (this entity) effective this month or earlier.
+    // 1) Apply pending transfers effective this month or earlier (skipped on preview).
     const pending = await pool.request().input("ent", sql.Int, entityId).input("m", sql.Char, month)
       .query("SELECT * FROM dbo.Transfers WHERE entityId=@ent AND status = 'pending' AND effectiveMonth <= @m");
-    for (const t of pending.recordset) {
+    if (!dryRun) for (const t of pending.recordset) {
       const nb = await pool.request().input("ent", sql.Int, entityId).input("bid", sql.Int, t.toBatchId)
         .query("SELECT id, courseId, monthlyFee FROM dbo.Batches WHERE id = @bid AND entityId=@ent");
       const newBatch = nb.recordset[0];
       if (newBatch) {
         if (t.enrollmentId) {
-          await pool.request()
-            .input("eid", sql.Int, t.enrollmentId)
-            .input("bid", sql.Int, newBatch.id)
-            .input("cid", sql.Int, newBatch.courseId)
-            .input("fee", sql.Float, newBatch.monthlyFee)
+          await pool.request().input("eid", sql.Int, t.enrollmentId).input("bid", sql.Int, newBatch.id)
+            .input("cid", sql.Int, newBatch.courseId).input("fee", sql.Float, newBatch.monthlyFee)
             .query("UPDATE dbo.Enrollments SET batchId=@bid, courseId=@cid, monthlyFee=@fee, updatedAt=SYSUTCDATETIME() WHERE id=@eid");
         } else if (t.fromBatchId) {
-          await pool.request()
-            .input("sid", sql.Int, t.studentId)
-            .input("from", sql.Int, t.fromBatchId)
-            .input("bid", sql.Int, newBatch.id)
-            .input("cid", sql.Int, newBatch.courseId)
-            .input("fee", sql.Float, newBatch.monthlyFee)
+          await pool.request().input("sid", sql.Int, t.studentId).input("from", sql.Int, t.fromBatchId)
+            .input("bid", sql.Int, newBatch.id).input("cid", sql.Int, newBatch.courseId).input("fee", sql.Float, newBatch.monthlyFee)
             .query("UPDATE dbo.Enrollments SET batchId=@bid, courseId=@cid, monthlyFee=@fee, updatedAt=SYSUTCDATETIME() WHERE studentId=@sid AND batchId=@from AND status='active'");
         }
       }
@@ -240,67 +239,95 @@ export async function generateMonthlyVouchers(
         .query("UPDATE dbo.Transfers SET status='applied', appliedAt=SYSUTCDATETIME() WHERE id=@id");
     }
 
-    // 2) Students (this entity) with active fee-bearing enrollments and no voucher yet this month.
-    const targets = await pool.request().input("ent", sql.Int, entityId).input("m", sql.Char, month).query(`
+    // Scope filters (which students to bill): branch, and/or enrolled in a course/batch.
+    const scopeReq = pool.request().input("ent", sql.Int, entityId).input("m", sql.Char, month);
+    const scope: string[] = [];
+    if (opts.branchId) { scopeReq.input("scBranch", sql.Int, opts.branchId); scope.push("s.branchId = @scBranch"); }
+    if (opts.courseId) { scopeReq.input("scCourse", sql.Int, opts.courseId); scope.push("EXISTS (SELECT 1 FROM dbo.Enrollments e2 WHERE e2.studentId=e.studentId AND e2.status='active' AND e2.courseId=@scCourse)"); }
+    if (opts.batchId) { scopeReq.input("scBatch", sql.Int, opts.batchId); scope.push("EXISTS (SELECT 1 FROM dbo.Enrollments e2 WHERE e2.studentId=e.studentId AND e2.status='active' AND e2.batchId=@scBatch)"); }
+    const scopeClause = scope.length ? "AND " + scope.join(" AND ") : "";
+
+    // 2) Students with active fee-bearing enrollments and no voucher yet this month.
+    const targets = await scopeReq.query(`
       SELECT e.studentId, s.branchId AS branchId, SUM(e.monthlyFee) AS total,
-             SUM(e.discount) AS discountTotal, MAX(s.scholarship) AS scholarship
+             SUM(e.discount) AS discountTotal, MAX(s.scholarship) AS scholarship, MAX(s.discountPct) AS discountPct
       FROM dbo.Enrollments e
       JOIN dbo.Students s ON s.id = e.studentId
       WHERE e.entityId=@ent AND e.status = 'active' AND e.monthlyFee > 0
         AND NOT EXISTS (SELECT 1 FROM dbo.Vouchers v WHERE v.studentId = e.studentId AND v.billingMonth = @m)
+        ${scopeClause}
       GROUP BY e.studentId, s.branchId
       HAVING SUM(e.monthlyFee) > 0
     `);
+
+    // Resolve the chosen add-on fee components once (name + amount).
+    const feeIds = (opts.feeComponentIds || []).map(Number).filter((n) => !isNaN(n));
+    let addOns: { name: string; amount: number }[] = [];
+    if (feeIds.length) {
+      const fc = await pool.request().input("ent", sql.Int, entityId).input("ids", sql.Int, feeIds)
+        .query("SELECT name, amount FROM dbo.FeeComponents WHERE entityId=@ent AND id = ANY(@ids)");
+      addOns = fc.recordset.map((x: { name: string; amount: number }) => ({ name: x.name, amount: Number(x.amount) || 0 }));
+    }
+    const addOnSum = addOns.reduce((a, x) => a + x.amount, 0);
 
     const year = Number(month.slice(0, 4));
     let seq = (await nextSeqStart(pool, entityId, year));
     const monthName = new Date(year, Number(month.slice(5)) - 1, 1).toLocaleString("en-US", { month: "long" });
 
-    let created = 0;
+    let created = 0, totalAmount = 0;
     for (const t of targets.recordset) {
       const gross = t.total as number;
-      const discount = Math.min(t.discountTotal || 0, gross);
+      const pctCut = Math.round((gross * (Number(t.discountPct) || 0)) / 100);
+      const discount = Math.min((t.discountTotal || 0) + pctCut, gross);
       const scholarship = Math.min(t.scholarship || 0, Math.max(0, gross - discount));
-      const net = Math.max(0, gross - discount - scholarship);
-      if (net <= 0) continue;
+      const tuitionNet = Math.max(0, gross - discount - scholarship);
 
-      seq += 1;
-      const voucherNo = `VCH-${year}-${String(seq).padStart(4, "0")}`;
+      // Per-student enrollment lines (+ each course's exam fee once, if requested).
       const items = await pool.request().input("sid", sql.Int, t.studentId).query(`
-        SELECT e.batchId, e.monthlyFee, b.name AS batchName, c.name AS courseName
+        SELECT e.batchId, e.monthlyFee, e.courseId, b.name AS batchName, c.name AS courseName, c.examFee
         FROM dbo.Enrollments e
         LEFT JOIN dbo.Batches b ON b.id = e.batchId
         LEFT JOIN dbo.Courses c ON c.id = e.courseId
         WHERE e.studentId=@sid AND e.status='active' AND e.monthlyFee > 0
       `);
+      const examLines: { label: string; amount: number }[] = [];
+      if (opts.includeExamFee) {
+        const seen = new Set<number>();
+        for (const it of items.recordset) {
+          if (it.courseId && !seen.has(it.courseId) && Number(it.examFee) > 0) {
+            seen.add(it.courseId); examLines.push({ label: `Exam Fee — ${it.courseName || "Course"}`, amount: Number(it.examFee) });
+          }
+        }
+      }
+      const examSum = examLines.reduce((a, x) => a + x.amount, 0);
+      const amount = tuitionNet + addOnSum + examSum;
+      if (amount <= 0) continue;
+
+      created += 1; totalAmount += amount;
+      if (dryRun) continue; // preview: count + total only
+
+      seq += 1;
+      const voucherNo = `VCH-${year}-${String(seq).padStart(4, "0")}`;
       const vres = await pool.request()
-        .input("ent", sql.Int, entityId)
-        .input("branch", sql.Int, t.branchId)
-        .input("voucherNo", sql.NVarChar, voucherNo)
-        .input("studentId", sql.Int, t.studentId)
-        .input("description", sql.NVarChar, `Monthly Fee — ${monthName} ${year}`)
-        .input("amount", sql.Float, net)
-        .input("genDate", sql.Date, genDate)
-        .input("dueDate", sql.Date, dueDate)
-        .input("expiryDate", sql.Date, expiryDate)
-        .input("month", sql.Char, month)
+        .input("ent", sql.Int, entityId).input("branch", sql.Int, t.branchId)
+        .input("voucherNo", sql.NVarChar, voucherNo).input("studentId", sql.Int, t.studentId)
+        .input("description", sql.NVarChar, `Monthly Fee — ${monthName} ${year}`).input("amount", sql.Float, amount)
+        .input("genDate", sql.Date, genDate).input("dueDate", sql.Date, dueDate).input("expiryDate", sql.Date, expiryDate).input("month", sql.Char, month)
         .query(`INSERT INTO dbo.Vouchers (entityId, branchId, voucherNo, studentId, description, amount, generateDate, dueDate, expiryDate, billingMonth)
                 OUTPUT INSERTED.id VALUES (@ent,@branch,@voucherNo,@studentId,@description,@amount,@genDate,@dueDate,@expiryDate,@month)`);
       const vid = vres.recordset[0].id as number;
-      const addItem = (batchId: number | null, label: string, amount: number) =>
+      const addItem = (batchId: number | null, label: string, amt: number) =>
         pool.request().input("ent", sql.Int, entityId).input("vid", sql.Int, vid).input("bid", sql.Int, batchId)
-          .input("label", sql.NVarChar, label).input("amt", sql.Float, amount)
+          .input("label", sql.NVarChar, label).input("amt", sql.Float, amt)
           .query("INSERT INTO dbo.VoucherItems (entityId, voucherId, batchId, label, amount) VALUES (@ent,@vid,@bid,@label,@amt)");
-      for (const it of items.recordset) {
-        const label = `${it.courseName || "Course"}${it.batchName ? " - " + it.batchName : ""}`;
-        await addItem(it.batchId, label, it.monthlyFee);
-      }
+      for (const it of items.recordset) await addItem(it.batchId, `${it.courseName || "Course"}${it.batchName ? " - " + it.batchName : ""}`, it.monthlyFee);
       if (discount > 0) await addItem(null, "Discount", -discount);
       if (scholarship > 0) await addItem(null, "Scholarship", -scholarship);
-      created += 1;
+      for (const ex of examLines) await addItem(null, ex.label, ex.amount);
+      for (const ao of addOns) await addItem(null, ao.name, ao.amount);
     }
 
-    return { month, created, transfersApplied: pending.recordset.length };
+    return { month, created, transfersApplied: dryRun ? 0 : pending.recordset.length, totalAmount };
 }
 
 // Highest existing voucher sequence for an entity/year (for batch numbering).
@@ -311,7 +338,7 @@ async function nextSeqStart(pool: SqlPool, entityId: number, year: number): Prom
 }
 
 // POST /api/vouchers/generate — monthly generation for the caller's entity.
-router.post("/generate", adminOnly, async (req, res, next) => {
+router.post("/generate", canCreate, async (req, res, next) => {
   try {
     const pool = await getPool();
     const ctx = (req as AuthedRequest).ctx!;
@@ -324,8 +351,14 @@ router.post("/generate", adminOnly, async (req, res, next) => {
       generateDate: toDate(b.generateDate),
       dueDate: toDate(b.dueDate),
       expiryDate: toDate(b.expiryDate),
+      branchId: b.branchId != null && b.branchId !== "" ? Number(b.branchId) : null,
+      courseId: b.courseId != null && b.courseId !== "" ? Number(b.courseId) : null,
+      batchId: b.batchId != null && b.batchId !== "" ? Number(b.batchId) : null,
+      feeComponentIds: Array.isArray(b.feeComponentIds) ? b.feeComponentIds : [],
+      includeExamFee: !!b.includeExamFee,
+      dryRun: !!b.dryRun,
     });
-    await logAudit(req, "generate", "vouchers", month, `${result.created} voucher(s) generated`);
+    if (!b.dryRun) await logAudit(req, "generate", "vouchers", month, `${result.created} voucher(s) generated`);
     res.json(result);
   } catch (e) { next(e); }
 });
