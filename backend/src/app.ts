@@ -7,7 +7,7 @@ import { login } from "./routes/auth";
 import { authRequired } from "./auth";
 import { tenantContext } from "./tenant";
 import { ensureSchemaOnce } from "./db";
-import { autoGenerateHandler } from "./routes/internal";
+import { autoGenerateHandler, dbCheckHandler } from "./routes/internal";
 
 dotenv.config();
 
@@ -51,6 +51,10 @@ function loginLimiter(req: express.Request, res: express.Response, next: express
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "coachtrack-api" });
 });
+
+// Public DB-connectivity probe (before schema init) — surfaces the real DB
+// error remotely so deploy/env issues are diagnosable without server logs.
+app.get("/api/internal/dbcheck", dbCheckHandler);
 
 // Ensure the DB schema exists before any data route runs. Memoized, so it's a
 // no-op after the first request on a warm (serverless) instance. /health above

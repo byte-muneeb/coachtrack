@@ -7,6 +7,21 @@ function ym(d: Date): string {
 }
 
 /**
+ * Public DB-connectivity probe (no auth, no schema init) so a broken deploy
+ * surfaces the REAL database error instead of a generic 500. Returns the error
+ * message/code only — never the connection string.
+ */
+export async function dbCheckHandler(_req: Request, res: Response) {
+  try {
+    const pool = await getPool();
+    await pool.request().query("SELECT 1 AS ok");
+    res.json({ db: "ok" });
+  } catch (e) {
+    res.status(500).json({ db: "error", code: (e as { code?: string })?.code ?? null, message: String((e as Error)?.message || e).slice(0, 300) });
+  }
+}
+
+/**
  * Runs monthly voucher generation for EVERY active entity whose configured
  * `autoGenDay` is today and which hasn't been generated this month yet.
  * Idempotent per entity (guarded by each entity's `system.lastAutoGen` setting).
