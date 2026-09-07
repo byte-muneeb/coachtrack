@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { inquiriesApi, type Inquiry } from "@/lib/api";
 import StatCard from "@/components/StatCard";
 import PageHeader from "@/components/PageHeader";
+import Pagination, { usePagination } from "@/components/Pagination";
 import { inputCls } from "@/components/form";
 
 const STAGES: { key: string; label: string }[] = [
@@ -68,6 +69,8 @@ export default function AdmissionsPage() {
     catch (e) { alert(e instanceof Error ? e.message : "Failed"); }
   }
   const setF = (k: keyof IForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((p) => ({ ...p, [k]: e.target.value }));
+  const filteredInq = items.filter((i) => stageFilter === "all" || i.stage === stageFilter);
+  const pg = usePagination(filteredInq, 15);
 
   return (
     <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
@@ -126,16 +129,12 @@ export default function AdmissionsPage() {
                 <tr>
                   <td colSpan={6} className="px-md py-lg text-center font-body-md text-body-md text-error">{error} — is the backend running on :4000?</td>
                 </tr>
-              ) : (() => {
-                const rows = items.filter((i) => stageFilter === "all" || i.stage === stageFilter);
-                if (rows.length === 0) {
-                  return (
-                    <tr>
-                      <td colSpan={6} className="px-md py-lg text-center font-body-md text-body-md text-on-surface-variant">No inquiries yet.</td>
-                    </tr>
-                  );
-                }
-                return rows.map((i) => (
+              ) : pg.total === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-md py-lg text-center font-body-md text-body-md text-on-surface-variant">No inquiries yet.</td>
+                </tr>
+              ) : (
+                pg.pageItems.map((i) => (
                   <tr key={i.id} className="border-t border-outline-variant">
                     <td className="px-md py-sm font-body-md text-body-md text-on-surface">{i.name}</td>
                     <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{i.phone || "—"}</td>
@@ -163,11 +162,13 @@ export default function AdmissionsPage() {
                       </div>
                     </td>
                   </tr>
-                ));
-              })()}
+                ))
+              )}
             </tbody>
           </table>
         </div>
+
+        <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage} total={pg.total} rangeStart={pg.rangeStart} rangeEnd={pg.rangeEnd} unit="inquiries" />
       </div>
 
       {modal && (

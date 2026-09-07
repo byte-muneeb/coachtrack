@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { statsApi, type ReportsData, type ReportFilters } from "@/lib/api";
 import StatCard from "@/components/StatCard";
 import PageHeader from "@/components/PageHeader";
+import Pagination, { usePagination } from "@/components/Pagination";
 import { inputCls } from "@/components/form";
 import { exportCsv } from "@/lib/exportCsv";
 
@@ -60,6 +61,7 @@ export default function ReportsPage() {
   const courses = data?.availableCourses ?? [];
   const maxMonth = data ? Math.max(1, ...data.monthlyCollections.map((m) => m.collected)) : 1;
   const maxBilling = data ? Math.max(1, ...data.billingByCourse.map((b) => b.expected)) : 1;
+  const pg = usePagination(data?.defaulters ?? [], 15);
 
   return (
     <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
@@ -236,7 +238,7 @@ export default function ReportsPage() {
                         </td>
                       </tr>
                     ) : (
-                      data.defaulters.map((s) => (
+                      pg.pageItems.map((s) => (
                         <tr key={s.id} className="hover:bg-secondary/5">
                           <td className="px-md py-sm">
                             <div className="font-body-md text-body-md text-on-surface">{s.fullName}</div>
@@ -255,6 +257,11 @@ export default function ReportsPage() {
                   </tbody>
                 </table>
               </div>
+              {data.defaulters.length > 0 && (
+                <div className="border-t border-outline-variant px-md py-sm">
+                  <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage} total={pg.total} rangeStart={pg.rangeStart} rangeEnd={pg.rangeEnd} unit="defaulters" />
+                </div>
+              )}
             </div>
           </>
         ) : null}

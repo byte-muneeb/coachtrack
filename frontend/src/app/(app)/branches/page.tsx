@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { branchesApi, type Branch } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
+import Pagination, { usePagination } from "@/components/Pagination";
 import { inputCls } from "@/components/form";
 
 type BForm = { name: string; city: string; address: string; phone: string; manager: string; status: string };
@@ -47,6 +48,7 @@ export default function BranchesPage() {
     catch (e) { alert(e instanceof Error ? e.message : "Delete failed"); }
   }
   const setF = (k: keyof BForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((p) => ({ ...p, [k]: e.target.value }));
+  const pg = usePagination(branches, 12);
 
   return (
     <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
@@ -70,7 +72,7 @@ export default function BranchesPage() {
           <p className="font-body-md text-on-surface-variant">No branches yet. Click “New Branch”.</p>
         ) : (
           <div className="grid grid-cols-1 gap-md md:grid-cols-2 xl:grid-cols-3">
-            {branches.map((b) => (
+            {pg.pageItems.map((b) => (
               <div key={b.id} className="flex flex-col rounded-xl border border-outline-variant bg-surface-container-lowest p-lg">
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-sm">
@@ -95,6 +97,8 @@ export default function BranchesPage() {
             ))}
           </div>
         )}
+
+        {!loading && !error && <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage} total={pg.total} rangeStart={pg.rangeStart} rangeEnd={pg.rangeEnd} unit="branches" />}
         <p className="font-label-md text-label-md text-on-surface-variant">Note: per-branch consolidated metrics (students/revenue) activate once records are tagged by branch — planned with multi-branch tagging.</p>
       </div>
 

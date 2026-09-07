@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { coursesApi, type Course, type Batch } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
+import Pagination, { usePagination } from "@/components/Pagination";
 import { inputCls } from "@/components/form";
 import { fmtDate } from "@/lib/date";
 
@@ -78,6 +79,7 @@ export default function CoursesPage() {
 
   const setF = (k: keyof CourseForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm((p) => ({ ...p, [k]: e.target.value }));
+  const pg = usePagination(courses, 12);
 
   return (
     <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
@@ -107,7 +109,7 @@ export default function CoursesPage() {
           <p className="font-body-md text-on-surface-variant">No courses yet. Click “New Course”.</p>
         ) : (
           <div className="grid grid-cols-1 gap-md md:grid-cols-2 xl:grid-cols-3">
-            {courses.map((c) => (
+            {pg.pageItems.map((c) => (
               <div key={c.id} className="flex flex-col rounded-xl border border-outline-variant bg-surface-container-lowest p-lg">
                 <div className="flex items-start justify-between">
                   <div>
@@ -152,6 +154,8 @@ export default function CoursesPage() {
             ))}
           </div>
         )}
+
+        {!loading && !error && <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage} total={pg.total} rangeStart={pg.rangeStart} rangeEnd={pg.rangeEnd} unit="courses" />}
       </div>
 
       {/* Course form modal */}

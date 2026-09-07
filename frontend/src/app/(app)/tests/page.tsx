@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { testsApi, coursesApi, getUser, type Test, type TestInput, type Course, type Batch } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
+import Pagination, { usePagination } from "@/components/Pagination";
 import { fmtDate } from "@/lib/date";
 
 const CAN_WRITE = new Set(["entity_admin", "branch_manager", "teacher"]);
@@ -37,6 +38,7 @@ export default function TestsPage() {
   }
 
   const chip = "rounded-md px-sm py-[3px] font-label-md text-label-md font-semibold";
+  const pg = usePagination(tests, 15);
 
   return (
     <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
@@ -80,7 +82,7 @@ export default function TestsPage() {
                 <tr><td colSpan={6} className="px-md py-xl text-center font-body-md text-on-surface-variant">Loading…</td></tr>
               ) : tests.length === 0 ? (
                 <tr><td colSpan={6} className="px-md py-xl text-center font-body-md text-on-surface-variant">No tests yet. Create one to start recording marks.</td></tr>
-              ) : tests.map((t) => (
+              ) : pg.pageItems.map((t) => (
                 <tr key={t.id} className="hover:bg-secondary/5">
                   <td className="px-md py-sm">
                     <Link href={`/tests/${t.id}`} className="font-body-md text-body-md font-medium text-secondary hover:underline">{t.name}</Link>
@@ -110,6 +112,8 @@ export default function TestsPage() {
             </tbody>
           </table>
         </div>
+
+        <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage} total={pg.total} rangeStart={pg.rangeStart} rangeEnd={pg.rangeEnd} unit="tests" />
       </div>
 
       {modal && <CreateTest courses={courses} onClose={() => setModal(false)} onCreated={() => { setModal(false); load(); }} />}

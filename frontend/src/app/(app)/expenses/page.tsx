@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { expensesApi, type Expense, type ExpenseSummary } from "@/lib/api";
 import StatCard from "@/components/StatCard";
 import PageHeader from "@/components/PageHeader";
+import Pagination, { usePagination } from "@/components/Pagination";
 import { inputCls } from "@/components/form";
 import { fmtDate } from "@/lib/date";
 
@@ -50,6 +51,7 @@ export default function ExpensesPage() {
     catch (e) { alert(e instanceof Error ? e.message : "Delete failed"); }
   }
   const setF = (k: keyof EForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((p) => ({ ...p, [k]: e.target.value }));
+  const pg = usePagination(expenses, 15);
 
   return (
     <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
@@ -110,7 +112,7 @@ export default function ExpensesPage() {
                 <tr><td colSpan={6} className="px-md py-xl text-center text-error font-body-md">{error} — is the backend running on :4000?</td></tr>
               ) : expenses.length === 0 ? (
                 <tr><td colSpan={6} className="px-md py-xl text-center text-on-surface-variant font-body-md">No expenses yet. Click “Add Expense”.</td></tr>
-              ) : expenses.map((x) => (
+              ) : pg.pageItems.map((x) => (
                 <tr key={x.id} className="hover:bg-secondary/5">
                   <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{fmtDate(x.date) || "—"}</td>
                   <td className="px-md py-sm font-body-md text-body-md">{x.category || "—"}</td>
@@ -125,6 +127,8 @@ export default function ExpensesPage() {
             </tbody>
           </table>
         </div>
+
+        <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage} total={pg.total} rangeStart={pg.rangeStart} rangeEnd={pg.rangeEnd} unit="expenses" />
       </div>
 
       {modal && (

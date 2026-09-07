@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { feesApi, coursesApi, type FeeComponent, type Course } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
+import Pagination, { usePagination } from "@/components/Pagination";
 import { inputCls } from "@/components/form";
 
 const rs = (n: number) => "Rs " + Number(n || 0).toLocaleString("en-PK");
@@ -59,6 +60,7 @@ export default function FeesPage() {
 
   const setF = (k: keyof FeeForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm((p) => ({ ...p, [k]: e.target.value }));
+  const pg = usePagination(fees, 15);
 
   return (
     <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
@@ -93,7 +95,7 @@ export default function FeesPage() {
                 <tr><td colSpan={6} className="px-md py-xl text-center text-error font-body-md">{error} — is the backend running on :4000?</td></tr>
               ) : fees.length === 0 ? (
                 <tr><td colSpan={6} className="px-md py-xl text-center text-on-surface-variant font-body-md">No fee components yet. Click “New Fee”.</td></tr>
-              ) : fees.map((f) => (
+              ) : pg.pageItems.map((f) => (
                 <tr key={f.id} className="hover:bg-secondary/5">
                   <td className="px-md py-sm font-body-md text-body-md text-on-surface">{f.name}</td>
                   <td className="px-md py-sm font-body-md text-body-md text-on-surface-variant">{f.category || "—"}</td>
@@ -113,6 +115,8 @@ export default function FeesPage() {
             </tbody>
           </table>
         </div>
+
+        <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage} total={pg.total} rangeStart={pg.rangeStart} rangeEnd={pg.rangeEnd} unit="fee components" />
 
         {/* Course fee structure — admission / monthly / exam defined per course */}
         <div className="overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest">

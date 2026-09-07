@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { entitiesApi, getUser, beginImpersonation, signOut, type Entity, type AppUser } from "@/lib/api";
+import Pagination, { usePagination } from "@/components/Pagination";
 
 function initials(name: string) {
   return (name || "?").split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("");
@@ -62,6 +63,7 @@ export default function SuperAdminPage() {
     const q = query.trim().toLowerCase();
     return q ? entities.filter((e) => e.name.toLowerCase().includes(q) || e.slug.toLowerCase().includes(q)) : entities;
   }, [entities, query]);
+  const pg = usePagination(filtered, 15);
 
   const stats = useMemo(() => ({
     total: entities.length,
@@ -173,7 +175,7 @@ export default function SuperAdminPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((ent) => (
+                  {pg.pageItems.map((ent) => (
                     <tr key={ent.id} className="border-b border-outline-variant last:border-0 hover:bg-surface-container-low">
                       <td className="px-lg py-md">
                         <div className="flex items-center gap-sm">
@@ -211,6 +213,11 @@ export default function SuperAdminPage() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+          {filtered.length > 0 && (
+            <div className="border-t border-outline-variant px-lg py-md">
+              <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage} total={pg.total} rangeStart={pg.rangeStart} rangeEnd={pg.rangeEnd} unit="institutes" />
             </div>
           )}
         </section>

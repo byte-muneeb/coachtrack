@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { authApi, branchesApi, type AppUser, type Branch } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
+import Pagination, { usePagination } from "@/components/Pagination";
 import { Field, TextInput, Select } from "@/components/form";
 
 const ROLES = [
@@ -74,6 +75,8 @@ export default function UsersPage() {
     return ids.map((id) => branchName.get(id) || `#${id}`).join(", ");
   }
 
+  const pg = usePagination(users, 15);
+
   return (
     <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
       <div className="mx-auto max-w-[1000px] space-y-lg">
@@ -104,7 +107,7 @@ export default function UsersPage() {
                 <tr><td colSpan={6} className="px-md py-xl text-center text-error font-body-md">{error}</td></tr>
               ) : users.length === 0 ? (
                 <tr><td colSpan={6} className="px-md py-xl text-center text-on-surface-variant font-body-md">No users yet.</td></tr>
-              ) : users.map((u) => (
+              ) : pg.pageItems.map((u) => (
                 <tr key={u.id} className="hover:bg-secondary/5">
                   <td className="px-md py-sm font-body-md text-body-md text-on-surface">{u.fullName || "—"}</td>
                   <td className="px-md py-sm font-mono-data text-mono-data text-on-surface-variant">{u.username}</td>
@@ -119,6 +122,8 @@ export default function UsersPage() {
             </tbody>
           </table>
         </div>
+
+        <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage} total={pg.total} rangeStart={pg.rangeStart} rangeEnd={pg.rangeEnd} unit="users" />
       </div>
 
       {modal && (

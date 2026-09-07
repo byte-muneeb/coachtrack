@@ -6,6 +6,7 @@ import {
   type Voucher, type Student, type FeeComponent, type InstituteProfile, type Payment, type Course,
 } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
+import Pagination, { usePagination } from "@/components/Pagination";
 import { Field, TextInput, NumberInput, Select, inputCls } from "@/components/form";
 import { exportCsv } from "@/lib/exportCsv";
 import { fmtDate } from "@/lib/date";
@@ -144,6 +145,8 @@ export default function VouchersPage() {
     catch { setPrintFor(v); }
   }
 
+  const pg = usePagination(vouchers, 15);
+
   return (
     <main className="md:ml-[280px] pt-16 min-h-screen p-lg">
       <div className="mx-auto max-w-[1440px] space-y-lg print:hidden">
@@ -243,7 +246,7 @@ export default function VouchersPage() {
                 <tr><td colSpan={9} className="px-md py-xl text-center text-error font-body-md">{error} — is the backend running on :4000?</td></tr>
               ) : vouchers.length === 0 ? (
                 <tr><td colSpan={9} className="px-md py-xl text-center text-on-surface-variant font-body-md">No vouchers found. Generate monthly vouchers or create one.</td></tr>
-              ) : vouchers.map((v) => {
+              ) : pg.pageItems.map((v) => {
                 const remaining = v.amount - v.paidAmount;
                 return (
                   <tr key={v.id} className={`hover:bg-secondary/5 ${selected.has(v.id) ? "bg-secondary/5" : ""}`}>
@@ -279,6 +282,8 @@ export default function VouchersPage() {
             </tbody>
           </table>
         </div>
+
+        <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage} total={pg.total} rangeStart={pg.rangeStart} rangeEnd={pg.rangeEnd} unit="vouchers" />
       </div>
 
       {createOpen && <CreateVoucher students={students} fees={fees} onClose={() => setCreateOpen(false)} onSaved={() => { setCreateOpen(false); load(); }} />}

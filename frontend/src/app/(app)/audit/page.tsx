@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { auditApi, type AuditEntry } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
+import Pagination, { usePagination } from "@/components/Pagination";
 import { fmtDateTime } from "@/lib/date";
 
 const actionTone: Record<string, string> = {
@@ -17,6 +18,7 @@ export default function AuditPage() {
   const [rows, setRows] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const pg = usePagination(rows, 20);
 
   useEffect(() => {
     auditApi.list().then(setRows).catch((e) => setError(e instanceof Error ? e.message : "Failed")).finally(() => setLoading(false));
@@ -45,7 +47,7 @@ export default function AuditPage() {
                 <tr><td colSpan={5} className="px-md py-xl text-center text-error font-body-md">{error}</td></tr>
               ) : rows.length === 0 ? (
                 <tr><td colSpan={5} className="px-md py-xl text-center text-on-surface-variant font-body-md">No activity recorded yet.</td></tr>
-              ) : rows.map((r) => (
+              ) : pg.pageItems.map((r) => (
                 <tr key={r.id} className="hover:bg-secondary/5">
                   <td className="px-md py-sm font-mono-data text-[12px] text-on-surface-variant">{fmtDateTime(r.createdAt)}</td>
                   <td className="px-md py-sm font-body-md text-body-md">{r.username || "—"}</td>
@@ -57,6 +59,8 @@ export default function AuditPage() {
             </tbody>
           </table>
         </div>
+
+        <Pagination page={pg.page} totalPages={pg.totalPages} setPage={pg.setPage} total={pg.total} rangeStart={pg.rangeStart} rangeEnd={pg.rangeEnd} unit="entries" />
       </div>
     </main>
   );
